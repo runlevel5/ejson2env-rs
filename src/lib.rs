@@ -14,7 +14,7 @@ use std::path::Path;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::Value as JsonValue;
-use serde_yaml::Value as YamlValue;
+use serde_yml::Value as YamlValue;
 use thiserror::Error;
 
 /// Regex pattern for valid environment variable identifiers.
@@ -75,7 +75,7 @@ pub enum Ejson2EnvError {
     Json(#[from] serde_json::Error),
 
     #[error("yaml error: {0}")]
-    Yaml(#[from] serde_yaml::Error),
+    Yaml(#[from] serde_yml::Error),
 
     #[error("ejson error: {0}")]
     Ejson(#[from] ejson::EjsonError),
@@ -110,7 +110,7 @@ fn read_secrets(
             Ok(DecryptedSecrets::Json(secrets))
         }
         FileFormat::Yaml => {
-            let secrets: YamlValue = serde_yaml::from_slice(&decrypted)?;
+            let secrets: YamlValue = serde_yml::from_slice(&decrypted)?;
             Ok(DecryptedSecrets::Yaml(secrets))
         }
     }
@@ -608,7 +608,7 @@ mod tests {
     // EYAML tests
     #[test]
     fn test_extract_env_yaml_no_env() {
-        let secrets: YamlValue = serde_yaml::from_str(
+        let secrets: YamlValue = serde_yml::from_str(
             r#"
             _public_key: "abc123"
             "#,
@@ -620,7 +620,7 @@ mod tests {
 
     #[test]
     fn test_extract_env_yaml_not_map() {
-        let secrets: YamlValue = serde_yaml::from_str(
+        let secrets: YamlValue = serde_yml::from_str(
             r#"
             _public_key: "abc123"
             environment: "not a map"
@@ -633,7 +633,7 @@ mod tests {
 
     #[test]
     fn test_extract_env_yaml_invalid_key() {
-        let secrets: YamlValue = serde_yaml::from_str(
+        let secrets: YamlValue = serde_yml::from_str(
             r#"
             _public_key: "abc123"
             environment:
@@ -647,7 +647,7 @@ mod tests {
 
     #[test]
     fn test_extract_env_yaml_valid() {
-        let secrets: YamlValue = serde_yaml::from_str(
+        let secrets: YamlValue = serde_yml::from_str(
             r#"
             _public_key: "abc123"
             environment:
