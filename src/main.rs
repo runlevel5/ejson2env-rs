@@ -6,8 +6,8 @@ use std::process::exit;
 use clap::Parser;
 
 use ejson2env::{
-    export_env, export_quiet, read_and_export_env, read_key_from_stdin, trim_leading_underscore,
-    ExportFunction,
+    export_env, export_quiet, read_and_export_env, read_key_from_stdin, trim_leading_underscores,
+    trim_underscore_prefix, ExportFunction,
 };
 
 /// Get environment variables from ejson/eyaml files.
@@ -15,7 +15,7 @@ use ejson2env::{
 #[command(name = "ejson2env")]
 #[command(author = "Trung Le <8@tle.id.au>")]
 #[command(version)]
-#[command(about = "Get environment variables from ejson/eyaml files", long_about = None)]
+#[command(about = "Get environment variables from ejson/eyaml/etoml files", long_about = None)]
 struct Args {
     /// Directory containing EJSON keys
     #[arg(
@@ -34,7 +34,11 @@ struct Args {
     #[arg(short, long)]
     quiet: bool,
 
-    /// Trim leading underscore from variable names
+    /// Trim the first leading underscore from variable names
+    #[arg(long)]
+    trim_underscore_prefix: bool,
+
+    /// Trim all leading underscores from variable names (deprecated, use --trim-underscore-prefix)
     #[arg(long)]
     trim_underscore: bool,
 
@@ -72,15 +76,18 @@ fn main() {
     // Get stdout handle
     let mut stdout = io::stdout();
 
-    // Execute based on trim_underscore flag
-    if args.trim_underscore {
-        // We need a custom approach for trim_underscore
+    // Execute based on trim flags
+    if args.trim_underscore_prefix || args.trim_underscore {
         let result =
             ejson2env::read_and_extract_env(&filename, &args.keydir, &user_supplied_private_key);
 
         match result {
             Ok(env_values) => {
-                let trimmed = trim_leading_underscore(&env_values);
+                let trimmed = if args.trim_underscore_prefix {
+                    trim_underscore_prefix(&env_values)
+                } else {
+                    trim_leading_underscores(&env_values)
+                };
                 base_export_func(&mut stdout, &trimmed);
             }
             Err(e) if ejson2env::is_env_error(&e) => {

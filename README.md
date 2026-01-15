@@ -12,7 +12,8 @@ Reads an EJSON, EYAML, or ETOML file, decrypts the `environment` object, and out
     "_public_key": "<public key>",
     "environment": {
         "DATABASE_URL": "<encrypted>",
-        "API_KEY": "<encrypted>"
+        "API_KEY": "<encrypted>",
+        "_ENVIRONMENT": "production"
     }
 }
 ```
@@ -23,6 +24,7 @@ _public_key: "<public key>"
 environment:
   DATABASE_URL: "<encrypted>"
   API_KEY: "<encrypted>"
+  _ENVIRONMENT: production
 ```
 
 **Or** (`secrets.etoml`):
@@ -32,13 +34,17 @@ _public_key = "<public key>"
 [environment]
 DATABASE_URL = "<encrypted>"
 API_KEY = "<encrypted>"
+_ENVIRONMENT = "production"
 ```
 
 **Output**:
 ```shell
 export API_KEY='decrypted-api-key'
 export DATABASE_URL='decrypted-database-url'
+export _ENVIRONMENT='production'
 ```
+
+> **Underscore Prefix:** Keys prefixed with `_` (e.g., `_ENVIRONMENT`) are left **unencrypted** in the secrets file. This is useful for non-sensitive configuration values that you want to keep readable. Use `--trim-underscore-prefix` to strip the first leading underscore from variable names in the output (e.g., `_ENVIRONMENT` becomes `ENVIRONMENT`, but `__DOUBLE` becomes `_DOUBLE`).
 
 > **Shell Compatibility:** This tool generates `export` statements, which are supported by POSIX-compatible shells such as **bash**, **zsh**, **sh**, and **ksh**. It is not compatible with shells that use different syntax for environment variables (e.g., fish, csh, tcsh).
 
@@ -99,7 +105,10 @@ Options:
                          Can also be set via EJSON_KEYDIR env var
       --key-from-stdin   Read the private key from stdin
   -q, --quiet            Omit "export" prefix (output: KEY='value')
-      --trim-underscore  Remove leading underscores from variable names
+      --trim-underscore-prefix  Remove the first leading underscore from variable names
+                                (e.g., _ENVIRONMENT becomes ENVIRONMENT, __KEY becomes _KEY)
+      --trim-underscore  Remove all leading underscores from variable names
+                         (e.g., __KEY becomes KEY) [deprecated: use --trim-underscore-prefix]
   -h, --help             Print help
   -V, --version          Print version
 ```
@@ -119,8 +128,9 @@ cat /path/to/private.key | ejson2env --key-from-stdin secrets.ejson
 ejson2env -q secrets.ejson > .env
 
 # Strip leading underscores from variable names
-# _SECRET_KEY becomes SECRET_KEY
-ejson2env --trim-underscore secrets.ejson
+# Useful when you have unencrypted keys like _ENVIRONMENT that should
+# be exported as ENVIRONMENT (without the underscore prefix)
+ejson2env --trim-underscore-prefix secrets.ejson
 ```
 
 #### EYAML
@@ -136,8 +146,9 @@ cat /path/to/private.key | ejson2env --key-from-stdin secrets.eyaml
 ejson2env -q secrets.eyaml > .env
 
 # Strip leading underscores from variable names
-# _SECRET_KEY becomes SECRET_KEY
-ejson2env --trim-underscore secrets.eyaml
+# Useful when you have unencrypted keys like _ENVIRONMENT that should
+# be exported as ENVIRONMENT (without the underscore prefix)
+ejson2env --trim-underscore-prefix secrets.eyaml
 ```
 
 #### ETOML
@@ -153,8 +164,9 @@ cat /path/to/private.key | ejson2env --key-from-stdin secrets.etoml
 ejson2env -q secrets.etoml > .env
 
 # Strip leading underscores from variable names
-# _SECRET_KEY becomes SECRET_KEY
-ejson2env --trim-underscore secrets.etoml
+# Useful when you have unencrypted keys like _ENVIRONMENT that should
+# be exported as ENVIRONMENT (without the underscore prefix)
+ejson2env --trim-underscore-prefix secrets.etoml
 ```
 
 ## Key Management
