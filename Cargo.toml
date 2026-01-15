@@ -2,7 +2,7 @@
 name = "ejson2env"
 version = "0.0.1"
 edition = "2021"
-authors = ["Trung Le <8@tle.id.au>"]
+authors = ["Trung Lê <8@tle.id.au>"]
 description = "Export environment variables from EJSON files"
 license = "MIT"
 repository = "https://github.com/runlevel5/ejson2env-rs"
