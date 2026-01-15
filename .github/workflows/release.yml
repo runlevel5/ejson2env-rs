@@ -235,20 +235,20 @@ jobs:
         if: matrix.os != 'windows-latest'
         run: |
           cd target/${{ matrix.target }}/release
-          tar cJvf ../../../ejson-${{ needs.check-version.outputs.version }}-${{ matrix.target }}.tar.xz ejson
+          tar cJvf ../../../ejson2env-${{ needs.check-version.outputs.version }}-${{ matrix.target }}.tar.xz ejson2env
 
       - name: Prepare archive (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
           cd target/${{ matrix.target }}/release
-          Compress-Archive -Path ejson.exe -DestinationPath ../../../ejson-${{ needs.check-version.outputs.version }}-${{ matrix.target }}.zip
+          Compress-Archive -Path ejson2env.exe -DestinationPath ../../../ejson2env-${{ needs.check-version.outputs.version }}-${{ matrix.target }}.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ejson-${{ matrix.target }}
-          path: ejson-${{ needs.check-version.outputs.version }}-${{ matrix.target }}.${{ matrix.archive }}
+          name: ejson2env-${{ matrix.target }}
+          path: ejson2env-${{ needs.check-version.outputs.version }}-${{ matrix.target }}.${{ matrix.archive }}
 
   # Create GitHub release with all artifacts
   release:
