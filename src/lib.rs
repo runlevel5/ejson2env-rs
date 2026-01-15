@@ -350,8 +350,8 @@ pub fn trim_underscore_prefix(values: &BTreeMap<String, String>) -> BTreeMap<Str
     values
         .iter()
         .map(|(key, value)| {
-            let new_key = if key.starts_with('_') {
-                key[1..].to_string()
+            let new_key = if let Some(stripped) = key.strip_prefix('_') {
+                stripped.to_string()
             } else {
                 key.clone()
             };
