@@ -12,10 +12,7 @@ use ejson2env::{
 
 /// Get environment variables from ejson/eyaml files.
 #[derive(Parser, Debug)]
-#[command(name = "ejson2env")]
-#[command(author = "Trung Le <8@tle.id.au>")]
-#[command(version)]
-#[command(about = "Get environment variables from ejson/eyaml/etoml files", long_about = None)]
+#[command(author, version, about, long_about = None)]
 struct Args {
     /// Directory containing EJSON keys
     #[arg(
