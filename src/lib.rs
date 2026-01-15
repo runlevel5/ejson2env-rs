@@ -120,7 +120,7 @@ fn read_secrets(
 ///
 /// Returns a map of environment variable names to their values.
 /// Only string values are exported; non-string values are silently ignored.
-pub fn extract_env(secrets: &JsonValue) -> Result<BTreeMap<String, String>, Ejson2EnvError> {
+pub fn extract_env_json(secrets: &JsonValue) -> Result<BTreeMap<String, String>, Ejson2EnvError> {
     let raw_env = secrets.get("environment").ok_or(Ejson2EnvError::NoEnv)?;
 
     let env_map = raw_env.as_object().ok_or(Ejson2EnvError::EnvNotMap)?;
@@ -178,7 +178,7 @@ pub fn extract_env_from_secrets(
     secrets: &DecryptedSecrets,
 ) -> Result<BTreeMap<String, String>, Ejson2EnvError> {
     match secrets {
-        DecryptedSecrets::Json(json) => extract_env(json),
+        DecryptedSecrets::Json(json) => extract_env_json(json),
         DecryptedSecrets::Yaml(yaml) => extract_env_yaml(yaml),
     }
 }
@@ -368,38 +368,38 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_env_no_env() {
+    fn test_extract_env_json_no_env() {
         let secrets: JsonValue = serde_json::json!({
             "_public_key": "abc123"
         });
-        let result = extract_env(&secrets);
+        let result = extract_env_json(&secrets);
         assert!(matches!(result, Err(Ejson2EnvError::NoEnv)));
     }
 
     #[test]
-    fn test_extract_env_not_map() {
+    fn test_extract_env_json_not_map() {
         let secrets: JsonValue = serde_json::json!({
             "_public_key": "abc123",
             "environment": "not a map"
         });
-        let result = extract_env(&secrets);
+        let result = extract_env_json(&secrets);
         assert!(matches!(result, Err(Ejson2EnvError::EnvNotMap)));
     }
 
     #[test]
-    fn test_extract_env_invalid_key() {
+    fn test_extract_env_json_invalid_key() {
         let secrets: JsonValue = serde_json::json!({
             "_public_key": "abc123",
             "environment": {
                 "invalid key": "value"
             }
         });
-        let result = extract_env(&secrets);
+        let result = extract_env_json(&secrets);
         assert!(matches!(result, Err(Ejson2EnvError::InvalidIdentifier(_))));
     }
 
     #[test]
-    fn test_extract_env_valid() {
+    fn test_extract_env_json_valid() {
         let secrets: JsonValue = serde_json::json!({
             "_public_key": "abc123",
             "environment": {
@@ -407,7 +407,7 @@ mod tests {
                 "_underscore_key": "underscore_value"
             }
         });
-        let result = extract_env(&secrets).unwrap();
+        let result = extract_env_json(&secrets).unwrap();
         assert_eq!(result.get("test_key"), Some(&"test_value".to_string()));
         assert_eq!(
             result.get("_underscore_key"),
