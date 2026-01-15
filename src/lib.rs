@@ -1,14 +1,20 @@
-//! ejson2env - Export environment variables from EJSON files.
+//! ejson2env - Export environment variables from EJSON and EYAML files.
 //!
-//! This crate provides utilities for decrypting EJSON files and exporting
+//! This crate provides utilities for decrypting EJSON/EYAML files and exporting
 //! the secrets as shell environment variables.
+//!
+//! Supported file formats:
+//! - `.ejson`, `.json` - JSON format
+//! - `.eyaml`, `.yaml`, `.yml` - YAML format
 
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
+use std::path::Path;
 
 use once_cell::sync::Lazy;
 use regex::Regex;
-use serde_json::Value;
+use serde_json::Value as JsonValue;
+use serde_yml::Value as YamlValue;
 use thiserror::Error;
 
 /// Regex pattern for valid environment variable identifiers.
@@ -16,10 +22,38 @@ use thiserror::Error;
 static VALID_IDENTIFIER_PATTERN: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*$").unwrap());
 
+/// Supported file formats for ejson2env.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileFormat {
+    /// JSON format (.ejson, .json)
+    Json,
+    /// YAML format (.eyaml, .yaml, .yml)
+    Yaml,
+}
+
+impl FileFormat {
+    /// Detect the file format based on the file extension.
+    ///
+    /// Returns `Json` as the default if the extension is not recognized.
+    pub fn from_path<P: AsRef<Path>>(path: P) -> Self {
+        let path = path.as_ref();
+
+        if let Some(ext) = path.extension() {
+            match ext.to_str() {
+                Some("ejson") | Some("json") => FileFormat::Json,
+                Some("eyaml") | Some("yaml") | Some("yml") => FileFormat::Yaml,
+                _ => FileFormat::Json, // Default to JSON
+            }
+        } else {
+            FileFormat::Json // Default to JSON
+        }
+    }
+}
+
 /// Errors that can occur during ejson2env operations.
 #[derive(Error, Debug)]
 pub enum Ejson2EnvError {
-    #[error("environment is not set in ejson")]
+    #[error("environment is not set in ejson/eyaml")]
     NoEnv,
 
     #[error("environment is not a map[string]interface{{}}")]
@@ -28,7 +62,7 @@ pub enum Ejson2EnvError {
     #[error("invalid identifier as key in environment: {0:?}")]
     InvalidIdentifier(String),
 
-    #[error("could not load ejson file: {0}")]
+    #[error("could not load ejson/eyaml file: {0}")]
     LoadError(String),
 
     #[error("could not load environment from file: {0}")]
@@ -39,6 +73,9 @@ pub enum Ejson2EnvError {
 
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+
+    #[error("yaml error: {0}")]
+    Yaml(#[from] serde_yml::Error),
 
     #[error("ejson error: {0}")]
     Ejson(#[from] ejson::EjsonError),
@@ -52,18 +89,38 @@ pub fn is_env_error(err: &Ejson2EnvError) -> bool {
     matches!(err, Ejson2EnvError::NoEnv | Ejson2EnvError::EnvNotMap)
 }
 
-/// Reads and decrypts secrets from an EJSON file.
-fn read_secrets(filename: &str, keydir: &str, private_key: &str) -> Result<Value, Ejson2EnvError> {
-    let decrypted = ejson::decrypt_file(filename, keydir, private_key)?;
-    let secrets: Value = serde_json::from_slice(&decrypted)?;
-    Ok(secrets)
+/// Decrypted secrets that can be either JSON or YAML.
+pub enum DecryptedSecrets {
+    Json(JsonValue),
+    Yaml(YamlValue),
 }
 
-/// Extracts environment values from the decrypted secrets.
+/// Reads and decrypts secrets from an EJSON or EYAML file.
+fn read_secrets(
+    filename: &str,
+    keydir: &str,
+    private_key: &str,
+) -> Result<DecryptedSecrets, Ejson2EnvError> {
+    let decrypted = ejson::decrypt_file(filename, keydir, private_key)?;
+    let format = FileFormat::from_path(filename);
+
+    match format {
+        FileFormat::Json => {
+            let secrets: JsonValue = serde_json::from_slice(&decrypted)?;
+            Ok(DecryptedSecrets::Json(secrets))
+        }
+        FileFormat::Yaml => {
+            let secrets: YamlValue = serde_yml::from_slice(&decrypted)?;
+            Ok(DecryptedSecrets::Yaml(secrets))
+        }
+    }
+}
+
+/// Extracts environment values from decrypted JSON secrets.
 ///
 /// Returns a map of environment variable names to their values.
 /// Only string values are exported; non-string values are silently ignored.
-pub fn extract_env(secrets: &Value) -> Result<BTreeMap<String, String>, Ejson2EnvError> {
+pub fn extract_env_json(secrets: &JsonValue) -> Result<BTreeMap<String, String>, Ejson2EnvError> {
     let raw_env = secrets.get("environment").ok_or(Ejson2EnvError::NoEnv)?;
 
     let env_map = raw_env.as_object().ok_or(Ejson2EnvError::EnvNotMap)?;
@@ -85,6 +142,47 @@ pub fn extract_env(secrets: &Value) -> Result<BTreeMap<String, String>, Ejson2En
     Ok(env_secrets)
 }
 
+/// Extracts environment values from decrypted YAML secrets.
+///
+/// Returns a map of environment variable names to their values.
+/// Only string values are exported; non-string values are silently ignored.
+pub fn extract_env_yaml(secrets: &YamlValue) -> Result<BTreeMap<String, String>, Ejson2EnvError> {
+    let raw_env = secrets.get("environment").ok_or(Ejson2EnvError::NoEnv)?;
+
+    let env_map = raw_env.as_mapping().ok_or(Ejson2EnvError::EnvNotMap)?;
+
+    let mut env_secrets = BTreeMap::new();
+
+    for (key, raw_value) in env_map {
+        // Get the key as a string
+        let key_str = key
+            .as_str()
+            .ok_or_else(|| Ejson2EnvError::InvalidIdentifier(format!("{:?}", key)))?;
+
+        // Reject keys that would be invalid environment variable identifiers
+        if !VALID_IDENTIFIER_PATTERN.is_match(key_str) {
+            return Err(Ejson2EnvError::InvalidIdentifier(key_str.to_string()));
+        }
+
+        // Only export values that are strings
+        if let Some(value) = raw_value.as_str() {
+            env_secrets.insert(key_str.to_string(), value.to_string());
+        }
+    }
+
+    Ok(env_secrets)
+}
+
+/// Extracts environment values from decrypted secrets (JSON or YAML).
+pub fn extract_env_from_secrets(
+    secrets: &DecryptedSecrets,
+) -> Result<BTreeMap<String, String>, Ejson2EnvError> {
+    match secrets {
+        DecryptedSecrets::Json(json) => extract_env_json(json),
+        DecryptedSecrets::Yaml(yaml) => extract_env_yaml(yaml),
+    }
+}
+
 /// Reads secrets from file and extracts environment variables.
 pub fn read_and_extract_env(
     filename: &str,
@@ -93,7 +191,7 @@ pub fn read_and_extract_env(
 ) -> Result<BTreeMap<String, String>, Ejson2EnvError> {
     let secrets = read_secrets(filename, keydir, private_key)
         .map_err(|e| Ejson2EnvError::LoadError(e.to_string()))?;
-    extract_env(&secrets)
+    extract_env_from_secrets(&secrets)
 }
 
 /// Reads, extracts, and exports environment variables.
@@ -270,46 +368,46 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_env_no_env() {
-        let secrets: Value = serde_json::json!({
+    fn test_extract_env_json_no_env() {
+        let secrets: JsonValue = serde_json::json!({
             "_public_key": "abc123"
         });
-        let result = extract_env(&secrets);
+        let result = extract_env_json(&secrets);
         assert!(matches!(result, Err(Ejson2EnvError::NoEnv)));
     }
 
     #[test]
-    fn test_extract_env_not_map() {
-        let secrets: Value = serde_json::json!({
+    fn test_extract_env_json_not_map() {
+        let secrets: JsonValue = serde_json::json!({
             "_public_key": "abc123",
             "environment": "not a map"
         });
-        let result = extract_env(&secrets);
+        let result = extract_env_json(&secrets);
         assert!(matches!(result, Err(Ejson2EnvError::EnvNotMap)));
     }
 
     #[test]
-    fn test_extract_env_invalid_key() {
-        let secrets: Value = serde_json::json!({
+    fn test_extract_env_json_invalid_key() {
+        let secrets: JsonValue = serde_json::json!({
             "_public_key": "abc123",
             "environment": {
                 "invalid key": "value"
             }
         });
-        let result = extract_env(&secrets);
+        let result = extract_env_json(&secrets);
         assert!(matches!(result, Err(Ejson2EnvError::InvalidIdentifier(_))));
     }
 
     #[test]
-    fn test_extract_env_valid() {
-        let secrets: Value = serde_json::json!({
+    fn test_extract_env_json_valid() {
+        let secrets: JsonValue = serde_json::json!({
             "_public_key": "abc123",
             "environment": {
                 "test_key": "test_value",
                 "_underscore_key": "underscore_value"
             }
         });
-        let result = extract_env(&secrets).unwrap();
+        let result = extract_env_json(&secrets).unwrap();
         assert_eq!(result.get("test_key"), Some(&"test_value".to_string()));
         assert_eq!(
             result.get("_underscore_key"),
@@ -505,5 +603,169 @@ mod tests {
         );
 
         assert!(result.is_err());
+    }
+
+    // EYAML tests
+    #[test]
+    fn test_extract_env_yaml_no_env() {
+        let secrets: YamlValue = serde_yml::from_str(
+            r#"
+            _public_key: "abc123"
+            "#,
+        )
+        .unwrap();
+        let result = extract_env_yaml(&secrets);
+        assert!(matches!(result, Err(Ejson2EnvError::NoEnv)));
+    }
+
+    #[test]
+    fn test_extract_env_yaml_not_map() {
+        let secrets: YamlValue = serde_yml::from_str(
+            r#"
+            _public_key: "abc123"
+            environment: "not a map"
+            "#,
+        )
+        .unwrap();
+        let result = extract_env_yaml(&secrets);
+        assert!(matches!(result, Err(Ejson2EnvError::EnvNotMap)));
+    }
+
+    #[test]
+    fn test_extract_env_yaml_invalid_key() {
+        let secrets: YamlValue = serde_yml::from_str(
+            r#"
+            _public_key: "abc123"
+            environment:
+              "invalid key": "value"
+            "#,
+        )
+        .unwrap();
+        let result = extract_env_yaml(&secrets);
+        assert!(matches!(result, Err(Ejson2EnvError::InvalidIdentifier(_))));
+    }
+
+    #[test]
+    fn test_extract_env_yaml_valid() {
+        let secrets: YamlValue = serde_yml::from_str(
+            r#"
+            _public_key: "abc123"
+            environment:
+              test_key: "test_value"
+              _underscore_key: "underscore_value"
+            "#,
+        )
+        .unwrap();
+        let result = extract_env_yaml(&secrets).unwrap();
+        assert_eq!(result.get("test_key"), Some(&"test_value".to_string()));
+        assert_eq!(
+            result.get("_underscore_key"),
+            Some(&"underscore_value".to_string())
+        );
+    }
+
+    #[test]
+    fn test_load_eyaml_secrets() {
+        let result = read_and_extract_env(
+            &test_ejson_path("test-expected-usage.eyaml"),
+            "/opt/ejson/keys",
+            TEST_KEY_VALUE,
+        );
+
+        match result {
+            Ok(env_values) => {
+                assert_eq!(env_values.get("test_key"), Some(&"test value".to_string()));
+            }
+            Err(e) => panic!("Failed to load secrets: {}", e),
+        }
+    }
+
+    #[test]
+    fn test_load_eyaml_no_env_secrets() {
+        let result = read_and_extract_env(
+            &test_ejson_path("test-public-key-only.eyaml"),
+            "/opt/ejson/keys",
+            TEST_KEY_VALUE,
+        );
+
+        assert!(matches!(result, Err(Ejson2EnvError::NoEnv)));
+        if let Err(ref e) = result {
+            assert!(is_env_error(e));
+        }
+    }
+
+    #[test]
+    fn test_load_eyaml_bad_env_secrets() {
+        let result = read_and_extract_env(
+            &test_ejson_path("test-environment-string-not-object.eyaml"),
+            "/opt/ejson/keys",
+            TEST_KEY_VALUE,
+        );
+
+        assert!(matches!(result, Err(Ejson2EnvError::EnvNotMap)));
+        if let Err(ref e) = result {
+            assert!(is_env_error(e));
+        }
+    }
+
+    #[test]
+    fn test_load_eyaml_underscore_env_secrets() {
+        let result = read_and_extract_env(
+            &test_ejson_path("test-leading-underscore-env-key.eyaml"),
+            "/opt/ejson/keys",
+            TEST_KEY_VALUE,
+        );
+
+        match result {
+            Ok(env_values) => {
+                assert_eq!(env_values.get("_test_key"), Some(&"test value".to_string()));
+            }
+            Err(e) => panic!("Failed to load secrets: {}", e),
+        }
+    }
+
+    #[test]
+    fn test_read_and_export_eyaml_env() {
+        let mut output = Vec::new();
+
+        let result = read_and_export_env(
+            &test_ejson_path("test-expected-usage.eyaml"),
+            "/opt/ejson/keys",
+            TEST_KEY_VALUE,
+            export_env,
+            &mut output,
+        );
+
+        assert!(result.is_ok());
+        let output_str = String::from_utf8(output).unwrap();
+        assert_eq!(output_str, "export test_key='test value'\n");
+    }
+
+    #[test]
+    fn test_read_and_export_eyaml_env_quiet() {
+        let mut output = Vec::new();
+
+        let result = read_and_export_env(
+            &test_ejson_path("test-expected-usage.eyaml"),
+            "/opt/ejson/keys",
+            TEST_KEY_VALUE,
+            export_quiet,
+            &mut output,
+        );
+
+        assert!(result.is_ok());
+        let output_str = String::from_utf8(output).unwrap();
+        assert_eq!(output_str, "test_key='test value'\n");
+    }
+
+    #[test]
+    fn test_file_format_detection() {
+        assert_eq!(FileFormat::from_path("secrets.ejson"), FileFormat::Json);
+        assert_eq!(FileFormat::from_path("secrets.json"), FileFormat::Json);
+        assert_eq!(FileFormat::from_path("secrets.eyaml"), FileFormat::Yaml);
+        assert_eq!(FileFormat::from_path("secrets.yaml"), FileFormat::Yaml);
+        assert_eq!(FileFormat::from_path("secrets.yml"), FileFormat::Yaml);
+        assert_eq!(FileFormat::from_path("secrets.txt"), FileFormat::Json); // Default
+        assert_eq!(FileFormat::from_path("secrets"), FileFormat::Json); // No extension
     }
 }

@@ -1,4 +1,4 @@
-//! ejson2env CLI - Export environment variables from EJSON files.
+//! ejson2env CLI - Export environment variables from EJSON and EYAML files.
 
 use std::io;
 use std::process::exit;
@@ -10,12 +10,12 @@ use ejson2env::{
     ExportFunction,
 };
 
-/// Get environment variables from ejson files.
+/// Get environment variables from ejson/eyaml files.
 #[derive(Parser, Debug)]
 #[command(name = "ejson2env")]
 #[command(author = "Trung Le <8@tle.id.au>")]
 #[command(version)]
-#[command(about = "Get environment variables from ejson files", long_about = None)]
+#[command(about = "Get environment variables from ejson/eyaml files", long_about = None)]
 struct Args {
     /// Directory containing EJSON keys
     #[arg(
@@ -38,7 +38,7 @@ struct Args {
     #[arg(long)]
     trim_underscore: bool,
 
-    /// The ejson file to process
+    /// The ejson/eyaml file to process
     filename: Option<String>,
 }
 
@@ -53,7 +53,7 @@ fn main() {
     // Get the filename
     let filename = match args.filename {
         Some(f) => f,
-        None => fail("no secrets.ejson filename passed"),
+        None => fail("no secrets.ejson/secrets.eyaml filename passed"),
     };
 
     // Read private key from stdin if requested

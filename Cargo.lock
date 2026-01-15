@@ -249,7 +249,7 @@ dependencies = [
 
 [[package]]
 name = "ejson2env"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -257,6 +257,7 @@ dependencies = [
  "once_cell",
  "regex",
  "serde_json",
+ "serde_yml",
  "tempfile",
  "thiserror",
 ]
