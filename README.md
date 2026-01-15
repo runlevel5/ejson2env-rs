@@ -1,10 +1,10 @@
 # ejson2env-rs
 
-A Rust port of [Shopify/ejson2env](https://github.com/Shopify/ejson2env) for exporting encrypted EJSON/EYAML secrets as shell environment variables. Drop-in replacement with the same CLI interface, plus added support for YAML format.
+A Rust port of [Shopify/ejson2env](https://github.com/Shopify/ejson2env) for exporting encrypted EJSON/EYAML/ETOML secrets as shell environment variables. Drop-in replacement with the same CLI interface, plus added support for YAML and TOML formats.
 
 ## What It Does
 
-Reads an EJSON or EYAML file, decrypts the `environment` object, and outputs shell export statements.
+Reads an EJSON, EYAML, or ETOML file, decrypts the `environment` object, and outputs shell export statements.
 
 **Input** (`secrets.ejson`):
 ```json
@@ -25,6 +25,15 @@ environment:
   API_KEY: "<encrypted>"
 ```
 
+**Or** (`secrets.etoml`):
+```toml
+_public_key = "<public key>"
+
+[environment]
+DATABASE_URL = "<encrypted>"
+API_KEY = "<encrypted>"
+```
+
 **Output**:
 ```shell
 export API_KEY='decrypted-api-key'
@@ -41,6 +50,7 @@ Format detection is automatic based on file extension:
 |--------|------------|
 | JSON   | `.ejson`, `.json` |
 | YAML   | `.eyaml`, `.yaml`, `.yml` |
+| TOML   | `.etoml`, `.toml` |
 
 ## Installation
 
@@ -70,9 +80,13 @@ ejson2env secrets.ejson
 # Output export statements (EYAML)
 ejson2env secrets.eyaml
 
+# Output export statements (ETOML)
+ejson2env secrets.etoml
+
 # Load secrets into current shell
 eval $(ejson2env secrets.ejson)
 eval $(ejson2env secrets.eyaml)
+eval $(ejson2env secrets.etoml)
 ```
 
 ### Options
@@ -124,6 +138,23 @@ ejson2env -q secrets.eyaml > .env
 # Strip leading underscores from variable names
 # _SECRET_KEY becomes SECRET_KEY
 ejson2env --trim-underscore secrets.eyaml
+```
+
+#### ETOML
+
+```shell
+# Use a custom key directory
+ejson2env -k /path/to/keys secrets.etoml
+
+# Pipe key from another source
+cat /path/to/private.key | ejson2env --key-from-stdin secrets.etoml
+
+# Output without "export" prefix (useful for .env files)
+ejson2env -q secrets.etoml > .env
+
+# Strip leading underscores from variable names
+# _SECRET_KEY becomes SECRET_KEY
+ejson2env --trim-underscore secrets.etoml
 ```
 
 ## Key Management

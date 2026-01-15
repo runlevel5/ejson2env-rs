@@ -1,11 +1,12 @@
-//! ejson2env - Export environment variables from EJSON and EYAML files.
+//! ejson2env - Export environment variables from EJSON, EYAML, and ETOML files.
 //!
-//! This crate provides utilities for decrypting EJSON/EYAML files and exporting
+//! This crate provides utilities for decrypting EJSON/EYAML/ETOML files and exporting
 //! the secrets as shell environment variables.
 //!
 //! Supported file formats:
 //! - `.ejson`, `.json` - JSON format
 //! - `.eyaml`, `.yaml`, `.yml` - YAML format
+//! - `.etoml`, `.toml` - TOML format
 
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
@@ -16,6 +17,7 @@ use regex::Regex;
 use serde_json::Value as JsonValue;
 use serde_yml::Value as YamlValue;
 use thiserror::Error;
+use toml::Value as TomlValue;
 
 /// Regex pattern for valid environment variable identifiers.
 /// Must start with letter or underscore, followed by letters, digits, or underscores.
@@ -29,6 +31,8 @@ pub enum FileFormat {
     Json,
     /// YAML format (.eyaml, .yaml, .yml)
     Yaml,
+    /// TOML format (.etoml, .toml)
+    Toml,
 }
 
 impl FileFormat {
@@ -42,6 +46,7 @@ impl FileFormat {
             match ext.to_str() {
                 Some("ejson") | Some("json") => FileFormat::Json,
                 Some("eyaml") | Some("yaml") | Some("yml") => FileFormat::Yaml,
+                Some("etoml") | Some("toml") => FileFormat::Toml,
                 _ => FileFormat::Json, // Default to JSON
             }
         } else {
@@ -53,7 +58,7 @@ impl FileFormat {
 /// Errors that can occur during ejson2env operations.
 #[derive(Error, Debug)]
 pub enum Ejson2EnvError {
-    #[error("environment is not set in ejson/eyaml")]
+    #[error("environment is not set in ejson/eyaml/etoml")]
     NoEnv,
 
     #[error("environment is not a map[string]interface{{}}")]
@@ -62,7 +67,7 @@ pub enum Ejson2EnvError {
     #[error("invalid identifier as key in environment: {0:?}")]
     InvalidIdentifier(String),
 
-    #[error("could not load ejson/eyaml file: {0}")]
+    #[error("could not load ejson/eyaml/etoml file: {0}")]
     LoadError(String),
 
     #[error("could not load environment from file: {0}")]
@@ -77,6 +82,9 @@ pub enum Ejson2EnvError {
     #[error("yaml error: {0}")]
     Yaml(#[from] serde_yml::Error),
 
+    #[error("toml error: {0}")]
+    Toml(#[from] toml::de::Error),
+
     #[error("ejson error: {0}")]
     Ejson(#[from] ejson::EjsonError),
 }
@@ -89,13 +97,14 @@ pub fn is_env_error(err: &Ejson2EnvError) -> bool {
     matches!(err, Ejson2EnvError::NoEnv | Ejson2EnvError::EnvNotMap)
 }
 
-/// Decrypted secrets that can be either JSON or YAML.
+/// Decrypted secrets that can be either JSON, YAML, or TOML.
 pub enum DecryptedSecrets {
     Json(JsonValue),
     Yaml(YamlValue),
+    Toml(TomlValue),
 }
 
-/// Reads and decrypts secrets from an EJSON or EYAML file.
+/// Reads and decrypts secrets from an EJSON, EYAML, or ETOML file.
 fn read_secrets(
     filename: &str,
     keydir: &str,
@@ -112,6 +121,12 @@ fn read_secrets(
         FileFormat::Yaml => {
             let secrets: YamlValue = serde_yml::from_slice(&decrypted)?;
             Ok(DecryptedSecrets::Yaml(secrets))
+        }
+        FileFormat::Toml => {
+            let decrypted_str = std::str::from_utf8(&decrypted)
+                .map_err(|e| Ejson2EnvError::LoadError(format!("invalid UTF-8: {}", e)))?;
+            let secrets: TomlValue = toml::from_str(decrypted_str)?;
+            Ok(DecryptedSecrets::Toml(secrets))
         }
     }
 }
@@ -173,13 +188,40 @@ pub fn extract_env_yaml(secrets: &YamlValue) -> Result<BTreeMap<String, String>,
     Ok(env_secrets)
 }
 
-/// Extracts environment values from decrypted secrets (JSON or YAML).
+/// Extracts environment values from decrypted TOML secrets.
+///
+/// Returns a map of environment variable names to their values.
+/// Only string values are exported; non-string values are silently ignored.
+pub fn extract_env_toml(secrets: &TomlValue) -> Result<BTreeMap<String, String>, Ejson2EnvError> {
+    let raw_env = secrets.get("environment").ok_or(Ejson2EnvError::NoEnv)?;
+
+    let env_map = raw_env.as_table().ok_or(Ejson2EnvError::EnvNotMap)?;
+
+    let mut env_secrets = BTreeMap::new();
+
+    for (key, raw_value) in env_map {
+        // Reject keys that would be invalid environment variable identifiers
+        if !VALID_IDENTIFIER_PATTERN.is_match(key) {
+            return Err(Ejson2EnvError::InvalidIdentifier(key.clone()));
+        }
+
+        // Only export values that are strings
+        if let Some(value) = raw_value.as_str() {
+            env_secrets.insert(key.clone(), value.to_string());
+        }
+    }
+
+    Ok(env_secrets)
+}
+
+/// Extracts environment values from decrypted secrets (JSON, YAML, or TOML).
 pub fn extract_env_from_secrets(
     secrets: &DecryptedSecrets,
 ) -> Result<BTreeMap<String, String>, Ejson2EnvError> {
     match secrets {
         DecryptedSecrets::Json(json) => extract_env_json(json),
         DecryptedSecrets::Yaml(yaml) => extract_env_yaml(yaml),
+        DecryptedSecrets::Toml(toml) => extract_env_toml(toml),
     }
 }
 
@@ -765,7 +807,162 @@ mod tests {
         assert_eq!(FileFormat::from_path("secrets.eyaml"), FileFormat::Yaml);
         assert_eq!(FileFormat::from_path("secrets.yaml"), FileFormat::Yaml);
         assert_eq!(FileFormat::from_path("secrets.yml"), FileFormat::Yaml);
+        assert_eq!(FileFormat::from_path("secrets.etoml"), FileFormat::Toml);
+        assert_eq!(FileFormat::from_path("secrets.toml"), FileFormat::Toml);
         assert_eq!(FileFormat::from_path("secrets.txt"), FileFormat::Json); // Default
         assert_eq!(FileFormat::from_path("secrets"), FileFormat::Json); // No extension
+    }
+
+    // ETOML tests
+    #[test]
+    fn test_extract_env_toml_no_env() {
+        let secrets: TomlValue = toml::from_str(
+            r#"
+            _public_key = "abc123"
+            "#,
+        )
+        .unwrap();
+        let result = extract_env_toml(&secrets);
+        assert!(matches!(result, Err(Ejson2EnvError::NoEnv)));
+    }
+
+    #[test]
+    fn test_extract_env_toml_not_map() {
+        let secrets: TomlValue = toml::from_str(
+            r#"
+            _public_key = "abc123"
+            environment = "not a map"
+            "#,
+        )
+        .unwrap();
+        let result = extract_env_toml(&secrets);
+        assert!(matches!(result, Err(Ejson2EnvError::EnvNotMap)));
+    }
+
+    #[test]
+    fn test_extract_env_toml_invalid_key() {
+        let secrets: TomlValue = toml::from_str(
+            r#"
+            _public_key = "abc123"
+            [environment]
+            "invalid key" = "value"
+            "#,
+        )
+        .unwrap();
+        let result = extract_env_toml(&secrets);
+        assert!(matches!(result, Err(Ejson2EnvError::InvalidIdentifier(_))));
+    }
+
+    #[test]
+    fn test_extract_env_toml_valid() {
+        let secrets: TomlValue = toml::from_str(
+            r#"
+            _public_key = "abc123"
+            [environment]
+            test_key = "test_value"
+            _underscore_key = "underscore_value"
+            "#,
+        )
+        .unwrap();
+        let result = extract_env_toml(&secrets).unwrap();
+        assert_eq!(result.get("test_key"), Some(&"test_value".to_string()));
+        assert_eq!(
+            result.get("_underscore_key"),
+            Some(&"underscore_value".to_string())
+        );
+    }
+
+    #[test]
+    fn test_load_etoml_secrets() {
+        let result = read_and_extract_env(
+            &test_ejson_path("test-expected-usage.etoml"),
+            "/opt/ejson/keys",
+            TEST_KEY_VALUE,
+        );
+
+        match result {
+            Ok(env_values) => {
+                assert_eq!(env_values.get("test_key"), Some(&"test value".to_string()));
+            }
+            Err(e) => panic!("Failed to load secrets: {}", e),
+        }
+    }
+
+    #[test]
+    fn test_load_etoml_no_env_secrets() {
+        let result = read_and_extract_env(
+            &test_ejson_path("test-public-key-only.etoml"),
+            "/opt/ejson/keys",
+            TEST_KEY_VALUE,
+        );
+
+        assert!(matches!(result, Err(Ejson2EnvError::NoEnv)));
+        if let Err(ref e) = result {
+            assert!(is_env_error(e));
+        }
+    }
+
+    #[test]
+    fn test_load_etoml_bad_env_secrets() {
+        let result = read_and_extract_env(
+            &test_ejson_path("test-environment-string-not-object.etoml"),
+            "/opt/ejson/keys",
+            TEST_KEY_VALUE,
+        );
+
+        assert!(matches!(result, Err(Ejson2EnvError::EnvNotMap)));
+        if let Err(ref e) = result {
+            assert!(is_env_error(e));
+        }
+    }
+
+    #[test]
+    fn test_load_etoml_underscore_env_secrets() {
+        let result = read_and_extract_env(
+            &test_ejson_path("test-leading-underscore-env-key.etoml"),
+            "/opt/ejson/keys",
+            TEST_KEY_VALUE,
+        );
+
+        match result {
+            Ok(env_values) => {
+                assert_eq!(env_values.get("_test_key"), Some(&"test value".to_string()));
+            }
+            Err(e) => panic!("Failed to load secrets: {}", e),
+        }
+    }
+
+    #[test]
+    fn test_read_and_export_etoml_env() {
+        let mut output = Vec::new();
+
+        let result = read_and_export_env(
+            &test_ejson_path("test-expected-usage.etoml"),
+            "/opt/ejson/keys",
+            TEST_KEY_VALUE,
+            export_env,
+            &mut output,
+        );
+
+        assert!(result.is_ok());
+        let output_str = String::from_utf8(output).unwrap();
+        assert_eq!(output_str, "export test_key='test value'\n");
+    }
+
+    #[test]
+    fn test_read_and_export_etoml_env_quiet() {
+        let mut output = Vec::new();
+
+        let result = read_and_export_env(
+            &test_ejson_path("test-expected-usage.etoml"),
+            "/opt/ejson/keys",
+            TEST_KEY_VALUE,
+            export_quiet,
+            &mut output,
+        );
+
+        assert!(result.is_ok());
+        let output_str = String::from_utf8(output).unwrap();
+        assert_eq!(output_str, "test_key='test value'\n");
     }
 }
