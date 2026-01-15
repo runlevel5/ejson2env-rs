@@ -89,15 +89,13 @@ fn main() {
             }
             Err(e) => fail(&format!("could not load environment from file: {}", e)),
         }
-    } else {
-        if let Err(e) = read_and_export_env(
-            &filename,
-            &args.keydir,
-            &user_supplied_private_key,
-            base_export_func,
-            &mut stdout,
-        ) {
-            fail(&e.to_string());
-        }
+    } else if let Err(e) = read_and_export_env(
+        &filename,
+        &args.keydir,
+        &user_supplied_private_key,
+        base_export_func,
+        &mut stdout,
+    ) {
+        fail(&e.to_string());
     }
 }
