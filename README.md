@@ -1,10 +1,10 @@
 # ejson2env-rs
 
-A Rust port of [Shopify/ejson2env](https://github.com/Shopify/ejson2env) for exporting encrypted EJSON secrets as shell environment variables. Drop-in replacement with the same CLI interface.
+A Rust port of [Shopify/ejson2env](https://github.com/Shopify/ejson2env) for exporting encrypted EJSON/EYAML secrets as shell environment variables. Drop-in replacement with the same CLI interface, plus added support for YAML format.
 
 ## What It Does
 
-Reads an EJSON file, decrypts the `environment` object, and outputs shell export statements.
+Reads an EJSON or EYAML file, decrypts the `environment` object, and outputs shell export statements.
 
 **Input** (`secrets.ejson`):
 ```json
@@ -17,6 +17,14 @@ Reads an EJSON file, decrypts the `environment` object, and outputs shell export
 }
 ```
 
+**Or** (`secrets.eyaml`):
+```yaml
+_public_key: "<public key>"
+environment:
+  DATABASE_URL: "<encrypted>"
+  API_KEY: "<encrypted>"
+```
+
 **Output**:
 ```shell
 export API_KEY='decrypted-api-key'
@@ -24,6 +32,15 @@ export DATABASE_URL='decrypted-database-url'
 ```
 
 > **Shell Compatibility:** This tool generates `export` statements, which are supported by POSIX-compatible shells such as **bash**, **zsh**, **sh**, and **ksh**. It is not compatible with shells that use different syntax for environment variables (e.g., fish, csh, tcsh).
+
+## Supported File Formats
+
+Format detection is automatic based on file extension:
+
+| Format | Extensions |
+|--------|------------|
+| JSON   | `.ejson`, `.json` |
+| YAML   | `.eyaml`, `.yaml`, `.yml` |
 
 ## Installation
 
@@ -47,11 +64,15 @@ Download from [Releases](https://github.com/runlevel5/ejson2env-rs/releases).
 ### Basic Usage
 
 ```shell
-# Output export statements
+# Output export statements (EJSON)
 ejson2env secrets.ejson
+
+# Output export statements (EYAML)
+ejson2env secrets.eyaml
 
 # Load secrets into current shell
 eval $(ejson2env secrets.ejson)
+eval $(ejson2env secrets.eyaml)
 ```
 
 ### Options
@@ -71,6 +92,8 @@ Options:
 
 ### Examples
 
+#### EJSON
+
 ```shell
 # Use a custom key directory
 ejson2env -k /path/to/keys secrets.ejson
@@ -86,6 +109,23 @@ ejson2env -q secrets.ejson > .env
 ejson2env --trim-underscore secrets.ejson
 ```
 
+#### EYAML
+
+```shell
+# Use a custom key directory
+ejson2env -k /path/to/keys secrets.eyaml
+
+# Pipe key from another source
+cat /path/to/private.key | ejson2env --key-from-stdin secrets.eyaml
+
+# Output without "export" prefix (useful for .env files)
+ejson2env -q secrets.eyaml > .env
+
+# Strip leading underscores from variable names
+# _SECRET_KEY becomes SECRET_KEY
+ejson2env --trim-underscore secrets.eyaml
+```
+
 ## Key Management
 
 EJSON uses public-key cryptography. The private key must be available at decryption time:
@@ -97,4 +137,4 @@ EJSON uses public-key cryptography. The private key must be available at decrypt
 ## Related Projects
 
 - [ejson](https://github.com/Shopify/ejson) - Original EJSON tool by Shopify
-- [ejson-rs](https://github.com/runlevel5/ejson-rs) - Rust EJSON library this tool is built on
+- [ejson-rs](https://github.com/runlevel5/ejson-rs) - Rust EJSON library this tool is built on (supports JSON, YAML, and TOML)
