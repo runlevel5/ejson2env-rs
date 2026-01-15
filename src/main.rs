@@ -4,6 +4,7 @@ use std::io;
 use std::process::exit;
 
 use clap::Parser;
+use zeroize::Zeroizing;
 
 use ejson2env::{
     export_env, export_quiet, read_and_export_env, read_key_from_stdin, trim_leading_underscores,
@@ -58,13 +59,14 @@ fn main() {
     };
 
     // Read private key from stdin if requested
-    let user_supplied_private_key = if args.key_from_stdin {
+    // Using Zeroizing to ensure the key is securely wiped from memory when dropped
+    let user_supplied_private_key: Zeroizing<String> = if args.key_from_stdin {
         match read_key_from_stdin() {
             Ok(key) => key,
             Err(e) => fail(&format!("failed to read from stdin: {}", e)),
         }
     } else {
-        String::new()
+        Zeroizing::new(String::new())
     };
 
     // Select the export function based on flags
