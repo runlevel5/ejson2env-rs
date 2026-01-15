@@ -23,6 +23,8 @@ export API_KEY='decrypted-api-key'
 export DATABASE_URL='decrypted-database-url'
 ```
 
+> **Shell Compatibility:** This tool generates `export` statements, which are supported by POSIX-compatible shells such as **bash**, **zsh**, **sh**, and **ksh**. It is not compatible with shells that use different syntax for environment variables (e.g., fish, csh, tcsh).
+
 ## Installation
 
 ### From Source
