@@ -1,53 +1,98 @@
 # ejson2env-rs
 
-This is the Rust port of `Shopify/ejson2env`. It could be used as drop-in replacement since it shares the same interface.
+A Rust port of [Shopify/ejson2env](https://github.com/Shopify/ejson2env) for exporting encrypted EJSON secrets as shell environment variables. Drop-in replacement with the same CLI interface.
 
-`ejson2env-rs` is a tool to simplify storing secrets that should be accessible in the shell environment in your git repo. It is based on the [ejson-rs library](https://github.com/runlevel5/ejson-rs) and extends the `ejson` file format.
+## What It Does
 
-It exports all of the values in the `environment` object in the `ejson` file to the shell environment.
+Reads an EJSON file, decrypts the `environment` object, and outputs shell export statements.
 
-For example, with the below `ejson` file:
-
+**Input** (`secrets.ejson`):
 ```json
 {
-    "_public_key": "<public key here>",
+    "_public_key": "<public key>",
     "environment": {
-        "SECRET_SHELL_VARIABLE": "<encrypted data>"
+        "DATABASE_URL": "<encrypted>",
+        "API_KEY": "<encrypted>"
     }
 }
 ```
 
-Running:
+**Output**:
+```shell
+export API_KEY='decrypted-api-key'
+export DATABASE_URL='decrypted-database-url'
+```
+
+## Installation
+
+### From Source
 
 ```shell
-$ ejson2env test.ejson
-```
-
-Would result in the following output:
-
-```
-export SECRET_SHELL_VARIABLE=<decrypted data>
-```
-
-You can then have your shell evaluate this output:
-
-```shell
-$ eval $(ejson2env test.ejson)
-```
-
-## Using ejson2env
-
-`ejson2env`'s usage information is described in it's included `--help` flag.
-
-## Installing ejson2env
-
-Grab the pre-built binary from Releases page
-
-Alternatively it could be built from scratch:
-
-```sh
 git clone https://github.com/runlevel5/ejson2env-rs.git
 cd ejson2env-rs
 cargo build --release
 cp ./target/release/ejson2env ~/.local/bin/
 ```
+
+### Pre-built Binaries
+
+Download from [Releases](https://github.com/runlevel5/ejson2env-rs/releases).
+
+> **Note:** No Homebrew, Deb, or RPM packages yet. Contributions welcome!
+
+## Usage
+
+### Basic Usage
+
+```shell
+# Output export statements
+ejson2env secrets.ejson
+
+# Load secrets into current shell
+eval $(ejson2env secrets.ejson)
+```
+
+### Options
+
+```
+ejson2env [OPTIONS] <FILE>
+
+Options:
+  -k, --keydir <DIR>     Directory containing EJSON keys [default: /opt/ejson/keys]
+                         Can also be set via EJSON_KEYDIR env var
+      --key-from-stdin   Read the private key from stdin
+  -q, --quiet            Omit "export" prefix (output: KEY='value')
+      --trim-underscore  Remove leading underscores from variable names
+  -h, --help             Print help
+  -V, --version          Print version
+```
+
+### Examples
+
+```shell
+# Use a custom key directory
+ejson2env -k /path/to/keys secrets.ejson
+
+# Pipe key from another source
+cat /path/to/private.key | ejson2env --key-from-stdin secrets.ejson
+
+# Output without "export" prefix (useful for .env files)
+ejson2env -q secrets.ejson > .env
+
+# Strip leading underscores from variable names
+# _SECRET_KEY becomes SECRET_KEY
+ejson2env --trim-underscore secrets.ejson
+```
+
+## Key Management
+
+EJSON uses public-key cryptography. The private key must be available at decryption time:
+
+1. **File-based** (default): Place the private key in a file named after the public key in the keydir (e.g., `/opt/ejson/keys/<public_key>`)
+2. **Stdin**: Pass via `--key-from-stdin`
+3. **Environment**: Set `EJSON_KEYDIR` to override the default key directory
+
+## Related Projects
+
+- [ejson](https://github.com/Shopify/ejson) - Original EJSON tool by Shopify
+- [ejson-rs](https://github.com/runlevel5/ejson-rs) - Rust EJSON library this tool is built on
