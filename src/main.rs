@@ -6,8 +6,8 @@ use std::process::exit;
 use clap::Parser;
 
 use ejson2env::{
-    export_env, export_quiet, read_and_export_env, read_key_from_stdin,
-    trim_leading_underscore, ExportFunction,
+    export_env, export_quiet, read_and_export_env, read_key_from_stdin, trim_leading_underscore,
+    ExportFunction,
 };
 
 /// Get environment variables from ejson files.
@@ -18,7 +18,12 @@ use ejson2env::{
 #[command(about = "Get environment variables from ejson files", long_about = None)]
 struct Args {
     /// Directory containing EJSON keys
-    #[arg(short = 'k', long, default_value = "/opt/ejson/keys", env = "EJSON_KEYDIR")]
+    #[arg(
+        short = 'k',
+        long,
+        default_value = "/opt/ejson/keys",
+        env = "EJSON_KEYDIR"
+    )]
     keydir: String,
 
     /// Read the private key from STDIN
@@ -62,11 +67,7 @@ fn main() {
     };
 
     // Select the export function based on flags
-    let base_export_func: ExportFunction = if args.quiet {
-        export_quiet
-    } else {
-        export_env
-    };
+    let base_export_func: ExportFunction = if args.quiet { export_quiet } else { export_env };
 
     // Get stdout handle
     let mut stdout = io::stdout();
@@ -74,8 +75,9 @@ fn main() {
     // Execute based on trim_underscore flag
     if args.trim_underscore {
         // We need a custom approach for trim_underscore
-        let result = ejson2env::read_and_extract_env(&filename, &args.keydir, &user_supplied_private_key);
-        
+        let result =
+            ejson2env::read_and_extract_env(&filename, &args.keydir, &user_supplied_private_key);
+
         match result {
             Ok(env_values) => {
                 let trimmed = trim_leading_underscore(&env_values);

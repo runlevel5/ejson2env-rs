@@ -53,11 +53,7 @@ pub fn is_env_error(err: &Ejson2EnvError) -> bool {
 }
 
 /// Reads and decrypts secrets from an EJSON file.
-fn read_secrets(
-    filename: &str,
-    keydir: &str,
-    private_key: &str,
-) -> Result<Value, Ejson2EnvError> {
+fn read_secrets(filename: &str, keydir: &str, private_key: &str) -> Result<Value, Ejson2EnvError> {
     let decrypted = ejson::decrypt_file(filename, keydir, private_key)?;
     let secrets: Value = serde_json::from_slice(&decrypted)?;
     Ok(secrets)
@@ -68,13 +64,9 @@ fn read_secrets(
 /// Returns a map of environment variable names to their values.
 /// Only string values are exported; non-string values are silently ignored.
 pub fn extract_env(secrets: &Value) -> Result<BTreeMap<String, String>, Ejson2EnvError> {
-    let raw_env = secrets
-        .get("environment")
-        .ok_or(Ejson2EnvError::NoEnv)?;
+    let raw_env = secrets.get("environment").ok_or(Ejson2EnvError::NoEnv)?;
 
-    let env_map = raw_env
-        .as_object()
-        .ok_or(Ejson2EnvError::EnvNotMap)?;
+    let env_map = raw_env.as_object().ok_or(Ejson2EnvError::EnvNotMap)?;
 
     let mut env_secrets = BTreeMap::new();
 
@@ -210,9 +202,7 @@ pub fn export_quiet(w: &mut dyn Write, values: &BTreeMap<String, String>) {
 }
 
 /// Wraps an export function to trim leading underscores from variable names.
-pub fn trim_leading_underscore(
-    values: &BTreeMap<String, String>,
-) -> BTreeMap<String, String> {
+pub fn trim_leading_underscore(values: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     values
         .iter()
         .map(|(key, value)| {
@@ -321,7 +311,10 @@ mod tests {
         });
         let result = extract_env(&secrets).unwrap();
         assert_eq!(result.get("test_key"), Some(&"test_value".to_string()));
-        assert_eq!(result.get("_underscore_key"), Some(&"underscore_value".to_string()));
+        assert_eq!(
+            result.get("_underscore_key"),
+            Some(&"underscore_value".to_string())
+        );
     }
 
     #[test]
@@ -400,7 +393,9 @@ mod tests {
     fn test_is_env_error() {
         assert!(is_env_error(&Ejson2EnvError::NoEnv));
         assert!(is_env_error(&Ejson2EnvError::EnvNotMap));
-        assert!(!is_env_error(&Ejson2EnvError::InvalidIdentifier("test".to_string())));
+        assert!(!is_env_error(&Ejson2EnvError::InvalidIdentifier(
+            "test".to_string()
+        )));
     }
 
     #[test]
@@ -410,7 +405,7 @@ mod tests {
             "./key",
             TEST_KEY_VALUE,
         );
-        
+
         match result {
             Ok(env_values) => {
                 assert_eq!(env_values.get("test_key"), Some(&"test value".to_string()));
@@ -426,7 +421,7 @@ mod tests {
             "./key",
             TEST_KEY_VALUE,
         );
-        
+
         assert!(matches!(result, Err(Ejson2EnvError::NoEnv)));
         if let Err(ref e) = result {
             assert!(is_env_error(e));
@@ -440,7 +435,7 @@ mod tests {
             "./key",
             TEST_KEY_VALUE,
         );
-        
+
         assert!(matches!(result, Err(Ejson2EnvError::EnvNotMap)));
         if let Err(ref e) = result {
             assert!(is_env_error(e));
@@ -454,7 +449,7 @@ mod tests {
             "./key",
             TEST_KEY_VALUE,
         );
-        
+
         match result {
             Ok(env_values) => {
                 assert_eq!(env_values.get("_test_key"), Some(&"test value".to_string()));
@@ -466,7 +461,7 @@ mod tests {
     #[test]
     fn test_read_and_export_env() {
         let mut output = Vec::new();
-        
+
         let result = read_and_export_env(
             &test_ejson_path("test-expected-usage.ejson"),
             "./key",
@@ -474,7 +469,7 @@ mod tests {
             export_env,
             &mut output,
         );
-        
+
         assert!(result.is_ok());
         let output_str = String::from_utf8(output).unwrap();
         assert_eq!(output_str, "export test_key='test value'\n");
@@ -483,7 +478,7 @@ mod tests {
     #[test]
     fn test_read_and_export_env_quiet() {
         let mut output = Vec::new();
-        
+
         let result = read_and_export_env(
             &test_ejson_path("test-expected-usage.ejson"),
             "./key",
@@ -491,7 +486,7 @@ mod tests {
             export_quiet,
             &mut output,
         );
-        
+
         assert!(result.is_ok());
         let output_str = String::from_utf8(output).unwrap();
         assert_eq!(output_str, "test_key='test value'\n");
@@ -500,7 +495,7 @@ mod tests {
     #[test]
     fn test_read_and_export_env_bad_file() {
         let mut output = Vec::new();
-        
+
         let result = read_and_export_env(
             "bad.ejson",
             "./key",
@@ -508,7 +503,7 @@ mod tests {
             export_env,
             &mut output,
         );
-        
+
         assert!(result.is_err());
     }
 }
