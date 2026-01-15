@@ -18,11 +18,16 @@ use serde_json::Value as JsonValue;
 use serde_yml::Value as YamlValue;
 use thiserror::Error;
 use toml::Value as TomlValue;
+use zeroize::Zeroizing;
+
+// Re-export Zeroizing for use by dependent crates
+pub use zeroize::Zeroizing as SecretString;
 
 /// Regex pattern for valid environment variable identifiers.
 /// Must start with letter or underscore, followed by letters, digits, or underscores.
-static VALID_IDENTIFIER_PATTERN: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*$").unwrap());
+static VALID_IDENTIFIER_PATTERN: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*$").expect("VALID_IDENTIFIER_PATTERN regex is invalid")
+});
 
 /// Supported file formats for ejson2env.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +78,9 @@ pub enum Ejson2EnvError {
     #[error("could not load environment from file: {0}")]
     EnvLoadError(String),
 
+    #[error("invalid file path: {0}")]
+    InvalidPath(String),
+
     #[error("io error: {0}")]
     Io(#[from] io::Error),
 
@@ -104,13 +112,34 @@ pub enum DecryptedSecrets {
     Toml(TomlValue),
 }
 
+/// Validates that a path does not contain path traversal sequences.
+/// Returns the canonicalized path if valid.
+fn validate_path(path: &str) -> Result<std::path::PathBuf, Ejson2EnvError> {
+    let path_obj = Path::new(path);
+
+    // Check for path traversal sequences in the raw path
+    if path.contains("..") {
+        return Err(Ejson2EnvError::InvalidPath(
+            "path contains traversal sequences".to_string(),
+        ));
+    }
+
+    // Attempt to canonicalize the path to resolve symlinks and validate existence
+    path_obj
+        .canonicalize()
+        .map_err(|e| Ejson2EnvError::InvalidPath(format!("cannot resolve path: {}", e)))
+}
+
 /// Reads and decrypts secrets from an EJSON, EYAML, or ETOML file.
 fn read_secrets(
     filename: &str,
     keydir: &str,
     private_key: &str,
 ) -> Result<DecryptedSecrets, Ejson2EnvError> {
-    let decrypted = ejson::decrypt_file(filename, keydir, private_key)?;
+    // Validate the filename path to prevent path traversal
+    let canonical_path = validate_path(filename)?;
+
+    let decrypted = ejson::decrypt_file(&canonical_path, keydir, private_key)?;
     let format = FileFormat::from_path(filename);
 
     match format {
@@ -258,9 +287,13 @@ pub fn read_and_export_env<W: Write>(
 }
 
 /// Validates that a key is safe for use in shell export statements.
+/// Keys must contain only alphanumeric characters and underscores.
 fn valid_key(k: &str) -> bool {
+    if k.is_empty() {
+        return false;
+    }
     for c in k.chars() {
-        if !c.is_alphabetic() && !c.is_ascii_digit() && c != '_' && c != '-' {
+        if !c.is_alphabetic() && !c.is_ascii_digit() && c != '_' {
             return false;
         }
     }
@@ -346,16 +379,26 @@ pub fn export_quiet(w: &mut dyn Write, values: &BTreeMap<String, String>) {
 /// This is useful when you have unencrypted keys like `_ENVIRONMENT` that should
 /// be exported as `ENVIRONMENT`. Only the first underscore is removed, so `__KEY`
 /// becomes `_KEY`.
+///
+/// Keys that would become empty after trimming are skipped with a warning.
 pub fn trim_underscore_prefix(values: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     values
         .iter()
-        .map(|(key, value)| {
+        .filter_map(|(key, value)| {
             let new_key = if let Some(stripped) = key.strip_prefix('_') {
                 stripped.to_string()
             } else {
                 key.clone()
             };
-            (new_key, value.clone())
+            if new_key.is_empty() {
+                eprintln!(
+                    "ejson2env: skipping key '{}' because it becomes empty after trimming underscore",
+                    key
+                );
+                None
+            } else {
+                Some((new_key, value.clone()))
+            }
         })
         .collect()
 }
@@ -365,21 +408,34 @@ pub fn trim_underscore_prefix(values: &BTreeMap<String, String>) -> BTreeMap<Str
 /// This removes all leading underscores, so `__KEY` becomes `KEY`.
 /// Consider using `trim_underscore_prefix` instead if you only want to remove
 /// the first underscore.
+///
+/// Keys that would become empty after trimming are skipped with a warning.
 pub fn trim_leading_underscores(values: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     values
         .iter()
-        .map(|(key, value)| {
+        .filter_map(|(key, value)| {
             let new_key = key.trim_start_matches('_').to_string();
-            (new_key, value.clone())
+            if new_key.is_empty() {
+                eprintln!(
+                    "ejson2env: skipping key '{}' because it becomes empty after trimming underscores",
+                    key
+                );
+                None
+            } else {
+                Some((new_key, value.clone()))
+            }
         })
         .collect()
 }
 
 /// Reads a private key from stdin, trimming whitespace.
-pub fn read_key_from_stdin() -> Result<String, io::Error> {
-    let mut buffer = String::new();
+/// The returned string is wrapped in `Zeroizing` to ensure it is securely
+/// wiped from memory when dropped.
+pub fn read_key_from_stdin() -> Result<Zeroizing<String>, io::Error> {
+    let mut buffer = Zeroizing::new(String::new());
     io::stdin().read_to_string(&mut buffer)?;
-    Ok(buffer.trim().to_string())
+    let trimmed = Zeroizing::new(buffer.trim().to_string());
+    Ok(trimmed)
 }
 
 #[cfg(test)]
@@ -410,8 +466,10 @@ mod tests {
     #[test]
     fn test_valid_key() {
         assert!(valid_key("valid_key"));
-        assert!(valid_key("key-with-dash"));
         assert!(valid_key("KEY123"));
+        assert!(valid_key("a"));
+        assert!(!valid_key("")); // Empty key
+        assert!(!valid_key("key-with-dash")); // Dashes not allowed
         assert!(!valid_key("key with space"));
         assert!(!valid_key("key;semicolon"));
         assert!(!valid_key("key\nnewline"));
@@ -549,9 +607,10 @@ mod tests {
         values.insert("_".to_string(), "value".to_string());
 
         let trimmed = trim_underscore_prefix(&values);
-        // "_" becomes "" (empty string)
-        assert!(trimmed.contains_key(""));
+        // "_" should be skipped (not included) because it becomes empty
+        assert!(!trimmed.contains_key(""));
         assert!(!trimmed.contains_key("_"));
+        assert!(trimmed.is_empty());
     }
 
     #[test]
@@ -605,6 +664,36 @@ mod tests {
     }
 
     #[test]
+    fn test_trim_leading_underscores_only_underscores() {
+        // Edge case: key that is only underscores
+        let mut values = BTreeMap::new();
+        values.insert("___".to_string(), "value".to_string());
+
+        let trimmed = trim_leading_underscores(&values);
+        // "___" should be skipped (not included) because it becomes empty
+        assert!(!trimmed.contains_key(""));
+        assert!(!trimmed.contains_key("___"));
+        assert!(trimmed.is_empty());
+    }
+
+    #[test]
+    fn test_path_validation_rejects_traversal() {
+        // Path traversal should be rejected
+        let result = validate_path("../../../etc/passwd");
+        assert!(matches!(result, Err(Ejson2EnvError::InvalidPath(_))));
+
+        let result = validate_path("foo/../bar/../../../etc/passwd");
+        assert!(matches!(result, Err(Ejson2EnvError::InvalidPath(_))));
+    }
+
+    #[test]
+    fn test_path_validation_accepts_valid_paths() {
+        // Valid existing paths should be accepted
+        let result = validate_path("testdata/test-expected-usage.ejson");
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn test_export_escaping() {
         let mut output = Vec::new();
         let mut values = BTreeMap::new();
@@ -629,6 +718,28 @@ mod tests {
 
         export_env(&mut output, &values);
         // Invalid key should be blocked
+        assert!(String::from_utf8(output).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_empty_key_blocked() {
+        let mut output = Vec::new();
+        let mut values = BTreeMap::new();
+        values.insert("".to_string(), "value".to_string());
+
+        export_env(&mut output, &values);
+        // Empty key should be blocked
+        assert!(String::from_utf8(output).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_dash_in_key_blocked() {
+        let mut output = Vec::new();
+        let mut values = BTreeMap::new();
+        values.insert("key-with-dash".to_string(), "value".to_string());
+
+        export_env(&mut output, &values);
+        // Key with dash should be blocked (not valid for POSIX shell variables)
         assert!(String::from_utf8(output).unwrap().is_empty());
     }
 
