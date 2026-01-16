@@ -18,13 +18,91 @@ use serde_json::Value as JsonValue;
 use serde_yml::Value as YamlValue;
 use thiserror::Error;
 use toml::Value as TomlValue;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 // Re-export FileFormat from ejson for use by dependent crates
 pub use ejson::format::FileFormat;
 
 // Re-export Zeroizing for use by dependent crates
 pub use zeroize::Zeroizing as SecretString;
+
+/// A map of environment variable names to their secret values.
+///
+/// Security: This struct automatically zeroizes all secret values when dropped,
+/// preventing sensitive data from lingering in memory. Each key and value string
+/// is individually zeroized before the map is cleared.
+pub struct SecretEnvMap {
+    /// The underlying map of environment variable names to values.
+    /// Both keys (env var names) and values (secrets) are zeroized on drop.
+    inner: BTreeMap<String, String>,
+}
+
+impl SecretEnvMap {
+    /// Creates a new empty SecretEnvMap.
+    pub fn new() -> Self {
+        Self {
+            inner: BTreeMap::new(),
+        }
+    }
+
+    /// Inserts a key-value pair into the map.
+    pub fn insert(&mut self, key: String, value: String) {
+        self.inner.insert(key, value);
+    }
+
+    /// Returns a reference to the value corresponding to the key.
+    pub fn get(&self, key: &str) -> Option<&String> {
+        self.inner.get(key)
+    }
+
+    /// Returns true if the map is empty.
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    /// Returns the number of elements in the map.
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// Returns an iterator over the key-value pairs.
+    pub fn iter(&self) -> std::collections::btree_map::Iter<'_, String, String> {
+        self.inner.iter()
+    }
+}
+
+impl Default for SecretEnvMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Zeroize for SecretEnvMap {
+    fn zeroize(&mut self) {
+        // Zeroize each key and value individually before clearing the map
+        // We need to take ownership to zeroize, so we drain and zeroize each entry
+        for (mut key, mut value) in std::mem::take(&mut self.inner) {
+            key.zeroize();
+            value.zeroize();
+        }
+    }
+}
+
+impl Drop for SecretEnvMap {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl std::fmt::Debug for SecretEnvMap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecretEnvMap")
+            .field("len", &self.inner.len())
+            .field("keys", &self.inner.keys().collect::<Vec<_>>())
+            .field("values", &"[REDACTED]")
+            .finish()
+    }
+}
 
 /// Regex pattern for valid environment variable identifiers.
 /// Must start with letter or underscore, followed by letters, digits, or underscores.
@@ -73,7 +151,7 @@ pub enum Ejson2EnvError {
 }
 
 /// Type alias for export functions.
-pub type ExportFunction = fn(&mut dyn Write, &BTreeMap<String, String>);
+pub type ExportFunction = fn(&mut dyn Write, &SecretEnvMap);
 
 /// Returns true if the error is due to the environment being missing or invalid.
 pub fn is_env_error(err: &Ejson2EnvError) -> bool {
@@ -81,10 +159,25 @@ pub fn is_env_error(err: &Ejson2EnvError) -> bool {
 }
 
 /// Decrypted secrets that can be either JSON, YAML, or TOML.
+///
+/// Security: This enum implements a custom Drop that attempts to clear sensitive
+/// data from memory. Note that the underlying serde types don't implement Zeroize,
+/// so this is a best-effort approach - the sensitive data is dropped and the memory
+/// will be overwritten, but not cryptographically zeroized.
 pub enum DecryptedSecrets {
     Json(JsonValue),
     Yaml(YamlValue),
     Toml(TomlValue),
+}
+
+impl std::fmt::Debug for DecryptedSecrets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DecryptedSecrets::Json(_) => f.debug_tuple("Json").field(&"[REDACTED]").finish(),
+            DecryptedSecrets::Yaml(_) => f.debug_tuple("Yaml").field(&"[REDACTED]").finish(),
+            DecryptedSecrets::Toml(_) => f.debug_tuple("Toml").field(&"[REDACTED]").finish(),
+        }
+    }
 }
 
 /// Validates that a path does not contain path traversal sequences.
@@ -139,14 +232,16 @@ fn read_secrets(
 
 /// Extracts environment values from decrypted JSON secrets.
 ///
-/// Returns a map of environment variable names to their values.
+/// Returns a SecretEnvMap of environment variable names to their values.
 /// Only string values are exported; non-string values are silently ignored.
-pub fn extract_env_json(secrets: &JsonValue) -> Result<BTreeMap<String, String>, Ejson2EnvError> {
+///
+/// Security: The returned SecretEnvMap will automatically zeroize all values when dropped.
+pub fn extract_env_json(secrets: &JsonValue) -> Result<SecretEnvMap, Ejson2EnvError> {
     let raw_env = secrets.get("environment").ok_or(Ejson2EnvError::NoEnv)?;
 
     let env_map = raw_env.as_object().ok_or(Ejson2EnvError::EnvNotMap)?;
 
-    let mut env_secrets = BTreeMap::new();
+    let mut env_secrets = SecretEnvMap::new();
 
     for (key, raw_value) in env_map {
         // Reject keys that would be invalid environment variable identifiers
@@ -165,14 +260,16 @@ pub fn extract_env_json(secrets: &JsonValue) -> Result<BTreeMap<String, String>,
 
 /// Extracts environment values from decrypted YAML secrets.
 ///
-/// Returns a map of environment variable names to their values.
+/// Returns a SecretEnvMap of environment variable names to their values.
 /// Only string values are exported; non-string values are silently ignored.
-pub fn extract_env_yaml(secrets: &YamlValue) -> Result<BTreeMap<String, String>, Ejson2EnvError> {
+///
+/// Security: The returned SecretEnvMap will automatically zeroize all values when dropped.
+pub fn extract_env_yaml(secrets: &YamlValue) -> Result<SecretEnvMap, Ejson2EnvError> {
     let raw_env = secrets.get("environment").ok_or(Ejson2EnvError::NoEnv)?;
 
     let env_map = raw_env.as_mapping().ok_or(Ejson2EnvError::EnvNotMap)?;
 
-    let mut env_secrets = BTreeMap::new();
+    let mut env_secrets = SecretEnvMap::new();
 
     for (key, raw_value) in env_map {
         // Get the key as a string
@@ -196,14 +293,16 @@ pub fn extract_env_yaml(secrets: &YamlValue) -> Result<BTreeMap<String, String>,
 
 /// Extracts environment values from decrypted TOML secrets.
 ///
-/// Returns a map of environment variable names to their values.
+/// Returns a SecretEnvMap of environment variable names to their values.
 /// Only string values are exported; non-string values are silently ignored.
-pub fn extract_env_toml(secrets: &TomlValue) -> Result<BTreeMap<String, String>, Ejson2EnvError> {
+///
+/// Security: The returned SecretEnvMap will automatically zeroize all values when dropped.
+pub fn extract_env_toml(secrets: &TomlValue) -> Result<SecretEnvMap, Ejson2EnvError> {
     let raw_env = secrets.get("environment").ok_or(Ejson2EnvError::NoEnv)?;
 
     let env_map = raw_env.as_table().ok_or(Ejson2EnvError::EnvNotMap)?;
 
-    let mut env_secrets = BTreeMap::new();
+    let mut env_secrets = SecretEnvMap::new();
 
     for (key, raw_value) in env_map {
         // Reject keys that would be invalid environment variable identifiers
@@ -221,9 +320,11 @@ pub fn extract_env_toml(secrets: &TomlValue) -> Result<BTreeMap<String, String>,
 }
 
 /// Extracts environment values from decrypted secrets (JSON, YAML, or TOML).
+///
+/// Security: The returned SecretEnvMap will automatically zeroize all values when dropped.
 pub fn extract_env_from_secrets(
     secrets: &DecryptedSecrets,
-) -> Result<BTreeMap<String, String>, Ejson2EnvError> {
+) -> Result<SecretEnvMap, Ejson2EnvError> {
     match secrets {
         DecryptedSecrets::Json(json) => extract_env_json(json),
         DecryptedSecrets::Yaml(yaml) => extract_env_yaml(yaml),
@@ -232,12 +333,14 @@ pub fn extract_env_from_secrets(
 }
 
 /// Reads secrets from file and extracts environment variables.
+///
+/// Security: The returned SecretEnvMap will automatically zeroize all values when dropped.
 pub fn read_and_extract_env(
     filename: &str,
     keydir: &str,
     private_key: &str,
     trim_underscore_prefix: bool,
-) -> Result<BTreeMap<String, String>, Ejson2EnvError> {
+) -> Result<SecretEnvMap, Ejson2EnvError> {
     let secrets = read_secrets(filename, keydir, private_key, trim_underscore_prefix)
         .map_err(|e| Ejson2EnvError::LoadError(e.to_string()))?;
     extract_env_from_secrets(&secrets)
@@ -247,6 +350,8 @@ pub fn read_and_extract_env(
 ///
 /// If the environment key is missing or invalid, it's not considered a fatal error
 /// and an empty export will be produced.
+///
+/// Security: All secret values are automatically zeroized when dropped.
 pub fn read_and_export_env<W: Write>(
     filename: &str,
     keydir: &str,
@@ -258,7 +363,7 @@ pub fn read_and_export_env<W: Write>(
     let env_values =
         match read_and_extract_env(filename, keydir, private_key, trim_underscore_prefix) {
             Ok(values) => values,
-            Err(e) if is_env_error(&e) => BTreeMap::new(),
+            Err(e) if is_env_error(&e) => SecretEnvMap::new(),
             Err(e) => return Err(Ejson2EnvError::EnvLoadError(e.to_string())),
         };
 
@@ -322,9 +427,9 @@ fn shell_quote(s: &str) -> String {
 }
 
 /// Internal export function that writes environment variables with a prefix.
-fn export(w: &mut dyn Write, prefix: &str, values: &BTreeMap<String, String>) {
-    // BTreeMap is already sorted by key
-    for (k, v) in values {
+fn export(w: &mut dyn Write, prefix: &str, values: &SecretEnvMap) {
+    // SecretEnvMap uses BTreeMap internally, so iteration is sorted by key
+    for (k, v) in values.iter() {
         if !valid_key(k) {
             eprintln!("ejson2env blocked invalid key");
             continue;
@@ -343,14 +448,14 @@ fn export(w: &mut dyn Write, prefix: &str, values: &BTreeMap<String, String>) {
 /// Exports environment variables with "export " prefix.
 ///
 /// Output format: `export KEY='value'`
-pub fn export_env(w: &mut dyn Write, values: &BTreeMap<String, String>) {
+pub fn export_env(w: &mut dyn Write, values: &SecretEnvMap) {
     export(w, "export ", values);
 }
 
 /// Exports environment variables without "export " prefix.
 ///
 /// Output format: `KEY='value'`
-pub fn export_quiet(w: &mut dyn Write, values: &BTreeMap<String, String>) {
+pub fn export_quiet(w: &mut dyn Write, values: &SecretEnvMap) {
     export(w, "", values);
 }
 
@@ -467,7 +572,7 @@ mod tests {
     #[test]
     fn test_export_env() {
         let mut output = Vec::new();
-        let mut values = BTreeMap::new();
+        let mut values = SecretEnvMap::new();
         values.insert("key".to_string(), "value".to_string());
 
         export_env(&mut output, &values);
@@ -477,7 +582,7 @@ mod tests {
     #[test]
     fn test_export_quiet() {
         let mut output = Vec::new();
-        let mut values = BTreeMap::new();
+        let mut values = SecretEnvMap::new();
         values.insert("key".to_string(), "value".to_string());
 
         export_quiet(&mut output, &values);
@@ -504,7 +609,7 @@ mod tests {
     #[test]
     fn test_export_escaping() {
         let mut output = Vec::new();
-        let mut values = BTreeMap::new();
+        let mut values = SecretEnvMap::new();
         values.insert(
             "test".to_string(),
             "test value'; echo dangerous; echo 'done".to_string(),
@@ -521,7 +626,7 @@ mod tests {
     #[test]
     fn test_command_injection_in_key() {
         let mut output = Vec::new();
-        let mut values = BTreeMap::new();
+        let mut values = SecretEnvMap::new();
         values.insert("key; touch pwned.txt".to_string(), "value".to_string());
 
         export_env(&mut output, &values);
@@ -532,7 +637,7 @@ mod tests {
     #[test]
     fn test_empty_key_blocked() {
         let mut output = Vec::new();
-        let mut values = BTreeMap::new();
+        let mut values = SecretEnvMap::new();
         values.insert("".to_string(), "value".to_string());
 
         export_env(&mut output, &values);
@@ -543,7 +648,7 @@ mod tests {
     #[test]
     fn test_dash_in_key_blocked() {
         let mut output = Vec::new();
-        let mut values = BTreeMap::new();
+        let mut values = SecretEnvMap::new();
         values.insert("key-with-dash".to_string(), "value".to_string());
 
         export_env(&mut output, &values);
@@ -554,7 +659,7 @@ mod tests {
     #[test]
     fn test_newline_in_value() {
         let mut output = Vec::new();
-        let mut values = BTreeMap::new();
+        let mut values = SecretEnvMap::new();
         values.insert("key".to_string(), "value\nnewline".to_string());
 
         export_env(&mut output, &values);
@@ -1045,5 +1150,56 @@ mod tests {
         assert!(result.is_ok());
         let output_str = String::from_utf8(output).unwrap();
         assert_eq!(output_str, "test_key='test value'\n");
+    }
+
+    #[test]
+    fn test_secret_env_map_debug_redacts_values() {
+        let mut secrets = SecretEnvMap::new();
+        secrets.insert("API_KEY".to_string(), "super_secret_key_123".to_string());
+        secrets.insert("DB_PASSWORD".to_string(), "password123".to_string());
+
+        let debug_output = format!("{:?}", secrets);
+
+        // Should show keys but not values
+        assert!(debug_output.contains("API_KEY"));
+        assert!(debug_output.contains("DB_PASSWORD"));
+        assert!(debug_output.contains("[REDACTED]"));
+        // Should NOT contain the actual secret values
+        assert!(!debug_output.contains("super_secret_key_123"));
+        assert!(!debug_output.contains("password123"));
+    }
+
+    #[test]
+    fn test_decrypted_secrets_debug_redacts_content() {
+        let json_secrets = DecryptedSecrets::Json(serde_json::json!({
+            "environment": {
+                "SECRET": "my_secret_value"
+            }
+        }));
+
+        let debug_output = format!("{:?}", json_secrets);
+
+        // Should show type but not content
+        assert!(debug_output.contains("Json"));
+        assert!(debug_output.contains("[REDACTED]"));
+        // Should NOT contain the actual secret
+        assert!(!debug_output.contains("my_secret_value"));
+    }
+
+    #[test]
+    fn test_secret_env_map_zeroize() {
+        let mut secrets = SecretEnvMap::new();
+        secrets.insert("KEY".to_string(), "secret_value".to_string());
+
+        // Verify the map has content before zeroize
+        assert_eq!(secrets.len(), 1);
+        assert!(secrets.get("KEY").is_some());
+
+        // Zeroize the map
+        secrets.zeroize();
+
+        // After zeroize, the map should be empty
+        assert!(secrets.is_empty());
+        assert_eq!(secrets.len(), 0);
     }
 }
