@@ -135,11 +135,13 @@ fn read_secrets(
     filename: &str,
     keydir: &str,
     private_key: &str,
+    trim_underscore_prefix: bool,
 ) -> Result<DecryptedSecrets, Ejson2EnvError> {
     // Validate the filename path to prevent path traversal
     let canonical_path = validate_path(filename)?;
 
-    let decrypted = ejson::decrypt_file(&canonical_path, keydir, private_key)?;
+    let decrypted =
+        ejson::decrypt_file(&canonical_path, keydir, private_key, trim_underscore_prefix)?;
     let format = FileFormat::from_path(filename);
 
     match format {
@@ -259,8 +261,9 @@ pub fn read_and_extract_env(
     filename: &str,
     keydir: &str,
     private_key: &str,
+    trim_underscore_prefix: bool,
 ) -> Result<BTreeMap<String, String>, Ejson2EnvError> {
-    let secrets = read_secrets(filename, keydir, private_key)
+    let secrets = read_secrets(filename, keydir, private_key, trim_underscore_prefix)
         .map_err(|e| Ejson2EnvError::LoadError(e.to_string()))?;
     extract_env_from_secrets(&secrets)
 }
@@ -273,14 +276,16 @@ pub fn read_and_export_env<W: Write>(
     filename: &str,
     keydir: &str,
     private_key: &str,
+    trim_underscore_prefix: bool,
     export_func: ExportFunction,
     output: &mut W,
 ) -> Result<(), Ejson2EnvError> {
-    let env_values = match read_and_extract_env(filename, keydir, private_key) {
-        Ok(values) => values,
-        Err(e) if is_env_error(&e) => BTreeMap::new(),
-        Err(e) => return Err(Ejson2EnvError::EnvLoadError(e.to_string())),
-    };
+    let env_values =
+        match read_and_extract_env(filename, keydir, private_key, trim_underscore_prefix) {
+            Ok(values) => values,
+            Err(e) if is_env_error(&e) => BTreeMap::new(),
+            Err(e) => return Err(Ejson2EnvError::EnvLoadError(e.to_string())),
+        };
 
     export_func(output, &env_values);
     Ok(())
@@ -372,60 +377,6 @@ pub fn export_env(w: &mut dyn Write, values: &BTreeMap<String, String>) {
 /// Output format: `KEY='value'`
 pub fn export_quiet(w: &mut dyn Write, values: &BTreeMap<String, String>) {
     export(w, "", values);
-}
-
-/// Trims only the first leading underscore from variable names.
-///
-/// This is useful when you have unencrypted keys like `_ENVIRONMENT` that should
-/// be exported as `ENVIRONMENT`. Only the first underscore is removed, so `__KEY`
-/// becomes `_KEY`.
-///
-/// Keys that would become empty after trimming are skipped with a warning.
-pub fn trim_underscore_prefix(values: &BTreeMap<String, String>) -> BTreeMap<String, String> {
-    values
-        .iter()
-        .filter_map(|(key, value)| {
-            let new_key = if let Some(stripped) = key.strip_prefix('_') {
-                stripped.to_string()
-            } else {
-                key.clone()
-            };
-            if new_key.is_empty() {
-                eprintln!(
-                    "ejson2env: skipping key '{}' because it becomes empty after trimming underscore",
-                    key
-                );
-                None
-            } else {
-                Some((new_key, value.clone()))
-            }
-        })
-        .collect()
-}
-
-/// Trims all leading underscores from variable names.
-///
-/// This removes all leading underscores, so `__KEY` becomes `KEY`.
-/// Consider using `trim_underscore_prefix` instead if you only want to remove
-/// the first underscore.
-///
-/// Keys that would become empty after trimming are skipped with a warning.
-pub fn trim_leading_underscores(values: &BTreeMap<String, String>) -> BTreeMap<String, String> {
-    values
-        .iter()
-        .filter_map(|(key, value)| {
-            let new_key = key.trim_start_matches('_').to_string();
-            if new_key.is_empty() {
-                eprintln!(
-                    "ejson2env: skipping key '{}' because it becomes empty after trimming underscores",
-                    key
-                );
-                None
-            } else {
-                Some((new_key, value.clone()))
-            }
-        })
-        .collect()
 }
 
 /// Reads a private key from stdin, trimming whitespace.
@@ -559,124 +510,6 @@ mod tests {
     }
 
     #[test]
-    fn test_trim_underscore_prefix_single() {
-        let mut values = BTreeMap::new();
-        values.insert("_test_key".to_string(), "test_value".to_string());
-        values.insert("normal_key".to_string(), "normal_value".to_string());
-
-        let trimmed = trim_underscore_prefix(&values);
-        assert!(trimmed.contains_key("test_key"));
-        assert!(trimmed.contains_key("normal_key"));
-        assert!(!trimmed.contains_key("_test_key"));
-    }
-
-    #[test]
-    fn test_trim_underscore_prefix_multiple_underscores() {
-        // Should only trim the first underscore, not all of them
-        let mut values = BTreeMap::new();
-        values.insert("__double_underscore".to_string(), "value1".to_string());
-        values.insert("___triple_underscore".to_string(), "value2".to_string());
-
-        let trimmed = trim_underscore_prefix(&values);
-        // __double_underscore -> _double_underscore (only first _ removed)
-        assert!(trimmed.contains_key("_double_underscore"));
-        assert!(!trimmed.contains_key("double_underscore"));
-        // ___triple_underscore -> __triple_underscore (only first _ removed)
-        assert!(trimmed.contains_key("__triple_underscore"));
-        assert!(!trimmed.contains_key("_triple_underscore"));
-        assert!(!trimmed.contains_key("triple_underscore"));
-    }
-
-    #[test]
-    fn test_trim_underscore_prefix_no_underscore() {
-        // Keys without leading underscore should remain unchanged
-        let mut values = BTreeMap::new();
-        values.insert("no_leading_underscore".to_string(), "value".to_string());
-        values.insert("ANOTHER_KEY".to_string(), "value2".to_string());
-
-        let trimmed = trim_underscore_prefix(&values);
-        assert!(trimmed.contains_key("no_leading_underscore"));
-        assert!(trimmed.contains_key("ANOTHER_KEY"));
-        assert_eq!(trimmed.len(), 2);
-    }
-
-    #[test]
-    fn test_trim_underscore_prefix_only_underscore() {
-        // Edge case: key that is just an underscore
-        let mut values = BTreeMap::new();
-        values.insert("_".to_string(), "value".to_string());
-
-        let trimmed = trim_underscore_prefix(&values);
-        // "_" should be skipped (not included) because it becomes empty
-        assert!(!trimmed.contains_key(""));
-        assert!(!trimmed.contains_key("_"));
-        assert!(trimmed.is_empty());
-    }
-
-    #[test]
-    fn test_trim_underscore_prefix_preserves_values() {
-        let mut values = BTreeMap::new();
-        values.insert("_key1".to_string(), "value1".to_string());
-        values.insert("key2".to_string(), "value2".to_string());
-
-        let trimmed = trim_underscore_prefix(&values);
-        assert_eq!(trimmed.get("key1"), Some(&"value1".to_string()));
-        assert_eq!(trimmed.get("key2"), Some(&"value2".to_string()));
-    }
-
-    #[test]
-    fn test_trim_leading_underscores_single() {
-        let mut values = BTreeMap::new();
-        values.insert("_test_key".to_string(), "test_value".to_string());
-        values.insert("normal_key".to_string(), "normal_value".to_string());
-
-        let trimmed = trim_leading_underscores(&values);
-        assert!(trimmed.contains_key("test_key"));
-        assert!(trimmed.contains_key("normal_key"));
-        assert!(!trimmed.contains_key("_test_key"));
-    }
-
-    #[test]
-    fn test_trim_leading_underscores_multiple() {
-        // Should trim ALL leading underscores
-        let mut values = BTreeMap::new();
-        values.insert("__double_underscore".to_string(), "value1".to_string());
-        values.insert("___triple_underscore".to_string(), "value2".to_string());
-
-        let trimmed = trim_leading_underscores(&values);
-        // __double_underscore -> double_underscore (all _ removed)
-        assert!(trimmed.contains_key("double_underscore"));
-        assert!(!trimmed.contains_key("_double_underscore"));
-        // ___triple_underscore -> triple_underscore (all _ removed)
-        assert!(trimmed.contains_key("triple_underscore"));
-        assert!(!trimmed.contains_key("__triple_underscore"));
-    }
-
-    #[test]
-    fn test_trim_leading_underscores_preserves_values() {
-        let mut values = BTreeMap::new();
-        values.insert("__key1".to_string(), "value1".to_string());
-        values.insert("key2".to_string(), "value2".to_string());
-
-        let trimmed = trim_leading_underscores(&values);
-        assert_eq!(trimmed.get("key1"), Some(&"value1".to_string()));
-        assert_eq!(trimmed.get("key2"), Some(&"value2".to_string()));
-    }
-
-    #[test]
-    fn test_trim_leading_underscores_only_underscores() {
-        // Edge case: key that is only underscores
-        let mut values = BTreeMap::new();
-        values.insert("___".to_string(), "value".to_string());
-
-        let trimmed = trim_leading_underscores(&values);
-        // "___" should be skipped (not included) because it becomes empty
-        assert!(!trimmed.contains_key(""));
-        assert!(!trimmed.contains_key("___"));
-        assert!(trimmed.is_empty());
-    }
-
-    #[test]
     fn test_path_validation_rejects_traversal() {
         // Path traversal should be rejected
         let result = validate_path("../../../etc/passwd");
@@ -770,6 +603,7 @@ mod tests {
             &test_ejson_path("test-expected-usage.ejson"),
             "./key",
             TEST_KEY_VALUE,
+            false,
         );
 
         match result {
@@ -786,6 +620,7 @@ mod tests {
             &test_ejson_path("test-public-key-only.ejson"),
             "./key",
             TEST_KEY_VALUE,
+            false,
         );
 
         assert!(matches!(result, Err(Ejson2EnvError::NoEnv)));
@@ -800,6 +635,7 @@ mod tests {
             &test_ejson_path("test-environment-string-not-object.ejson"),
             "./key",
             TEST_KEY_VALUE,
+            false,
         );
 
         assert!(matches!(result, Err(Ejson2EnvError::EnvNotMap)));
@@ -814,6 +650,7 @@ mod tests {
             &test_ejson_path("test-leading-underscore-env-key.ejson"),
             "./key",
             TEST_KEY_VALUE,
+            false,
         );
 
         match result {
@@ -832,6 +669,7 @@ mod tests {
             &test_ejson_path("test-expected-usage.ejson"),
             "./key",
             TEST_KEY_VALUE,
+            false,
             export_env,
             &mut output,
         );
@@ -849,6 +687,7 @@ mod tests {
             &test_ejson_path("test-expected-usage.ejson"),
             "./key",
             TEST_KEY_VALUE,
+            false,
             export_quiet,
             &mut output,
         );
@@ -866,6 +705,7 @@ mod tests {
             "bad.ejson",
             "./key",
             TEST_KEY_VALUE,
+            false,
             export_env,
             &mut output,
         );
@@ -938,6 +778,7 @@ mod tests {
             &test_ejson_path("test-expected-usage.eyaml"),
             "/opt/ejson/keys",
             TEST_KEY_VALUE,
+            false,
         );
 
         match result {
@@ -954,6 +795,7 @@ mod tests {
             &test_ejson_path("test-public-key-only.eyaml"),
             "/opt/ejson/keys",
             TEST_KEY_VALUE,
+            false,
         );
 
         assert!(matches!(result, Err(Ejson2EnvError::NoEnv)));
@@ -968,6 +810,7 @@ mod tests {
             &test_ejson_path("test-environment-string-not-object.eyaml"),
             "/opt/ejson/keys",
             TEST_KEY_VALUE,
+            false,
         );
 
         assert!(matches!(result, Err(Ejson2EnvError::EnvNotMap)));
@@ -982,6 +825,7 @@ mod tests {
             &test_ejson_path("test-leading-underscore-env-key.eyaml"),
             "/opt/ejson/keys",
             TEST_KEY_VALUE,
+            false,
         );
 
         match result {
@@ -1000,6 +844,7 @@ mod tests {
             &test_ejson_path("test-expected-usage.eyaml"),
             "/opt/ejson/keys",
             TEST_KEY_VALUE,
+            false,
             export_env,
             &mut output,
         );
@@ -1017,6 +862,7 @@ mod tests {
             &test_ejson_path("test-expected-usage.eyaml"),
             "/opt/ejson/keys",
             TEST_KEY_VALUE,
+            false,
             export_quiet,
             &mut output,
         );
@@ -1104,6 +950,7 @@ mod tests {
             &test_ejson_path("test-expected-usage.etoml"),
             "/opt/ejson/keys",
             TEST_KEY_VALUE,
+            false,
         );
 
         match result {
@@ -1120,6 +967,7 @@ mod tests {
             &test_ejson_path("test-public-key-only.etoml"),
             "/opt/ejson/keys",
             TEST_KEY_VALUE,
+            false,
         );
 
         assert!(matches!(result, Err(Ejson2EnvError::NoEnv)));
@@ -1134,6 +982,7 @@ mod tests {
             &test_ejson_path("test-environment-string-not-object.etoml"),
             "/opt/ejson/keys",
             TEST_KEY_VALUE,
+            false,
         );
 
         assert!(matches!(result, Err(Ejson2EnvError::EnvNotMap)));
@@ -1148,6 +997,7 @@ mod tests {
             &test_ejson_path("test-leading-underscore-env-key.etoml"),
             "/opt/ejson/keys",
             TEST_KEY_VALUE,
+            false,
         );
 
         match result {
@@ -1166,6 +1016,7 @@ mod tests {
             &test_ejson_path("test-expected-usage.etoml"),
             "/opt/ejson/keys",
             TEST_KEY_VALUE,
+            false,
             export_env,
             &mut output,
         );
@@ -1183,6 +1034,7 @@ mod tests {
             &test_ejson_path("test-expected-usage.etoml"),
             "/opt/ejson/keys",
             TEST_KEY_VALUE,
+            false,
             export_quiet,
             &mut output,
         );
