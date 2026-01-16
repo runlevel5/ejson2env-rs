@@ -107,8 +107,6 @@ Options:
   -q, --quiet            Omit "export" prefix (output: KEY='value')
       --trim-underscore-prefix  Remove the first leading underscore from variable names
                                 (e.g., _ENVIRONMENT becomes ENVIRONMENT, __KEY becomes _KEY)
-      --trim-underscore  Remove all leading underscores from variable names
-                         (e.g., __KEY becomes KEY) [deprecated: use --trim-underscore-prefix]
   -h, --help             Print help
   -V, --version          Print version
 ```

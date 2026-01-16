@@ -7,8 +7,7 @@ use clap::Parser;
 use zeroize::Zeroizing;
 
 use ejson2env::{
-    export_env, export_quiet, read_and_export_env, read_key_from_stdin, trim_leading_underscores,
-    trim_underscore_prefix, ExportFunction,
+    export_env, export_quiet, read_and_export_env, read_key_from_stdin, ExportFunction,
 };
 
 /// Get environment variables from ejson/eyaml files.
@@ -35,10 +34,6 @@ struct Args {
     /// Trim the first leading underscore from variable names
     #[arg(long)]
     trim_underscore_prefix: bool,
-
-    /// Trim all leading underscores from variable names (deprecated, use --trim-underscore-prefix)
-    #[arg(long)]
-    trim_underscore: bool,
 
     /// The ejson/eyaml file to process
     filename: Option<String>,
@@ -70,36 +65,18 @@ fn main() {
     };
 
     // Select the export function based on flags
-    let base_export_func: ExportFunction = if args.quiet { export_quiet } else { export_env };
+    let export_func: ExportFunction = if args.quiet { export_quiet } else { export_env };
 
     // Get stdout handle
     let mut stdout = io::stdout();
 
-    // Execute based on trim flags
-    if args.trim_underscore_prefix || args.trim_underscore {
-        let result =
-            ejson2env::read_and_extract_env(&filename, &args.keydir, &user_supplied_private_key);
-
-        match result {
-            Ok(env_values) => {
-                let trimmed = if args.trim_underscore_prefix {
-                    trim_underscore_prefix(&env_values)
-                } else {
-                    trim_leading_underscores(&env_values)
-                };
-                base_export_func(&mut stdout, &trimmed);
-            }
-            Err(e) if ejson2env::is_env_error(&e) => {
-                // No env or bad env is not a fatal error
-                base_export_func(&mut stdout, &std::collections::BTreeMap::new());
-            }
-            Err(e) => fail(&format!("could not load environment from file: {}", e)),
-        }
-    } else if let Err(e) = read_and_export_env(
+    // Execute with the trim flag passed to the library
+    if let Err(e) = read_and_export_env(
         &filename,
         &args.keydir,
         &user_supplied_private_key,
-        base_export_func,
+        args.trim_underscore_prefix,
+        export_func,
         &mut stdout,
     ) {
         fail(&e.to_string());

@@ -1,6 +1,6 @@
 [package]
 name = "ejson2env"
-version = "0.0.6"
+version = "0.0.7"
 edition = "2021"
 authors = ["Trung Lê <8@tle.id.au>"]
 description = "Export environment variables from EJSON, EYAML, and ETOML files"
@@ -11,7 +11,7 @@ categories = ["command-line-utilities"]
 
 [dependencies]
 # EJSON library for decryption
-ejson = { git = "https://github.com/runlevel5/ejson-rs", tag = "v0.0.8" }
+ejson = { git = "https://github.com/runlevel5/ejson-rs", tag = "v0.0.9" }
 
 # CLI
 clap = { version = "4.5", features = ["derive", "env"] }

@@ -85,57 +85,6 @@ fn test_trim_underscore_prefix_with_quiet() {
     );
 }
 
-// Tests for --trim-underscore (strips ALL leading underscores - original behavior)
-
-#[test]
-fn test_trim_underscore_option() {
-    let (stdout, _stderr, success) = run_ejson2env(
-        &[
-            "--key-from-stdin",
-            "--trim-underscore",
-            "testdata/test-leading-underscore-env-key.ejson",
-        ],
-        Some(TEST_KEY_VALUE),
-    );
-
-    assert!(success, "Command should succeed with --trim-underscore");
-    assert!(
-        stdout.contains("export test_key='test value'"),
-        "Should trim all leading underscores: {}",
-        stdout
-    );
-    assert!(
-        !stdout.contains("_test_key"),
-        "Should not contain original key with underscore: {}",
-        stdout
-    );
-}
-
-#[test]
-fn test_trim_underscore_with_quiet() {
-    let (stdout, _stderr, success) = run_ejson2env(
-        &[
-            "--key-from-stdin",
-            "--trim-underscore",
-            "-q",
-            "testdata/test-leading-underscore-env-key.ejson",
-        ],
-        Some(TEST_KEY_VALUE),
-    );
-
-    assert!(success, "Command should succeed with --trim-underscore");
-    assert!(
-        stdout.contains("test_key='test value'"),
-        "Should output without export prefix: {}",
-        stdout
-    );
-    assert!(
-        !stdout.contains("export"),
-        "Should not contain export: {}",
-        stdout
-    );
-}
-
 // Test without any trim flag
 
 #[test]
@@ -156,7 +105,7 @@ fn test_without_trim_underscore_preserves_underscore() {
     );
 }
 
-// Tests demonstrating the difference between --trim-underscore and --trim-underscore-prefix
+// Tests demonstrating --trim-underscore-prefix strips only the first underscore
 // using keys with multiple leading underscores
 
 #[test]
@@ -194,45 +143,6 @@ fn test_trim_underscore_prefix_strips_only_first_underscore() {
     assert!(
         !stdout.contains("export triple_underscore_key="),
         "Should NOT strip all underscores from triple: {}",
-        stdout
-    );
-}
-
-#[test]
-fn test_trim_underscore_strips_all_underscores() {
-    // --trim-underscore should strip ALL leading underscores
-    // __double_underscore_key -> double_underscore_key
-    // ___triple_underscore_key -> triple_underscore_key
-    let (stdout, _stderr, success) = run_ejson2env(
-        &[
-            "--key-from-stdin",
-            "--trim-underscore",
-            "testdata/test-multiple-leading-underscores.ejson",
-        ],
-        Some(TEST_KEY_VALUE),
-    );
-
-    assert!(success, "Command should succeed");
-    // __double -> double (all _ removed)
-    assert!(
-        stdout.contains("double_underscore_key='double value'"),
-        "Should strip all underscores from double: {}",
-        stdout
-    );
-    assert!(
-        !stdout.contains("_double_underscore_key="),
-        "Should NOT have any leading underscores: {}",
-        stdout
-    );
-    // ___triple -> triple (all _ removed)
-    assert!(
-        stdout.contains("triple_underscore_key='triple value'"),
-        "Should strip all underscores from triple: {}",
-        stdout
-    );
-    assert!(
-        !stdout.contains("__triple_underscore_key="),
-        "Should NOT have any leading underscores: {}",
         stdout
     );
 }
