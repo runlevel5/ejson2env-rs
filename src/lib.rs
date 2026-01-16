@@ -5,7 +5,7 @@
 //!
 //! Supported file formats:
 //! - `.ejson`, `.json` - JSON format
-//! - `.eyaml`, `.yaml`, `.yml` - YAML format
+//! - `.eyaml`, `.eyml`, `.yaml`, `.yml` - YAML format
 //! - `.etoml`, `.toml` - TOML format
 
 use std::collections::BTreeMap;
@@ -20,6 +20,9 @@ use thiserror::Error;
 use toml::Value as TomlValue;
 use zeroize::Zeroizing;
 
+// Re-export FileFormat from ejson for use by dependent crates
+pub use ejson::format::FileFormat;
+
 // Re-export Zeroizing for use by dependent crates
 pub use zeroize::Zeroizing as SecretString;
 
@@ -28,37 +31,6 @@ pub use zeroize::Zeroizing as SecretString;
 static VALID_IDENTIFIER_PATTERN: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*$").expect("VALID_IDENTIFIER_PATTERN regex is invalid")
 });
-
-/// Supported file formats for ejson2env.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FileFormat {
-    /// JSON format (.ejson, .json)
-    Json,
-    /// YAML format (.eyaml, .yaml, .yml)
-    Yaml,
-    /// TOML format (.etoml, .toml)
-    Toml,
-}
-
-impl FileFormat {
-    /// Detect the file format based on the file extension.
-    ///
-    /// Returns `Json` as the default if the extension is not recognized.
-    pub fn from_path<P: AsRef<Path>>(path: P) -> Self {
-        let path = path.as_ref();
-
-        if let Some(ext) = path.extension() {
-            match ext.to_str() {
-                Some("ejson") | Some("json") => FileFormat::Json,
-                Some("eyaml") | Some("yaml") | Some("yml") => FileFormat::Yaml,
-                Some("etoml") | Some("toml") => FileFormat::Toml,
-                _ => FileFormat::Json, // Default to JSON
-            }
-        } else {
-            FileFormat::Json // Default to JSON
-        }
-    }
-}
 
 /// Errors that can occur during ejson2env operations.
 #[derive(Error, Debug)]
@@ -95,6 +67,9 @@ pub enum Ejson2EnvError {
 
     #[error("ejson error: {0}")]
     Ejson(#[from] ejson::EjsonError),
+
+    #[error("unsupported file format: {0}")]
+    UnsupportedFormat(#[from] ejson::format::FormatError),
 }
 
 /// Type alias for export functions.
@@ -142,7 +117,7 @@ fn read_secrets(
 
     let decrypted =
         ejson::decrypt_file(&canonical_path, keydir, private_key, trim_underscore_prefix)?;
-    let format = FileFormat::from_path(filename);
+    let format = FileFormat::from_path(filename)?;
 
     match format {
         FileFormat::Json => {
@@ -874,15 +849,43 @@ mod tests {
 
     #[test]
     fn test_file_format_detection() {
-        assert_eq!(FileFormat::from_path("secrets.ejson"), FileFormat::Json);
-        assert_eq!(FileFormat::from_path("secrets.json"), FileFormat::Json);
-        assert_eq!(FileFormat::from_path("secrets.eyaml"), FileFormat::Yaml);
-        assert_eq!(FileFormat::from_path("secrets.yaml"), FileFormat::Yaml);
-        assert_eq!(FileFormat::from_path("secrets.yml"), FileFormat::Yaml);
-        assert_eq!(FileFormat::from_path("secrets.etoml"), FileFormat::Toml);
-        assert_eq!(FileFormat::from_path("secrets.toml"), FileFormat::Toml);
-        assert_eq!(FileFormat::from_path("secrets.txt"), FileFormat::Json); // Default
-        assert_eq!(FileFormat::from_path("secrets"), FileFormat::Json); // No extension
+        // Valid formats
+        assert_eq!(
+            FileFormat::from_path("secrets.ejson").unwrap(),
+            FileFormat::Json
+        );
+        assert_eq!(
+            FileFormat::from_path("secrets.json").unwrap(),
+            FileFormat::Json
+        );
+        assert_eq!(
+            FileFormat::from_path("secrets.eyaml").unwrap(),
+            FileFormat::Yaml
+        );
+        assert_eq!(
+            FileFormat::from_path("secrets.eyml").unwrap(),
+            FileFormat::Yaml
+        );
+        assert_eq!(
+            FileFormat::from_path("secrets.yaml").unwrap(),
+            FileFormat::Yaml
+        );
+        assert_eq!(
+            FileFormat::from_path("secrets.yml").unwrap(),
+            FileFormat::Yaml
+        );
+        assert_eq!(
+            FileFormat::from_path("secrets.etoml").unwrap(),
+            FileFormat::Toml
+        );
+        assert_eq!(
+            FileFormat::from_path("secrets.toml").unwrap(),
+            FileFormat::Toml
+        );
+
+        // Invalid formats should return error
+        assert!(FileFormat::from_path("secrets.txt").is_err());
+        assert!(FileFormat::from_path("secrets").is_err());
     }
 
     // ETOML tests
