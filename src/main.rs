@@ -48,18 +48,14 @@ fn main() {
     let args = Args::parse();
 
     // Get the filename
-    let filename = match args.filename {
-        Some(f) => f,
-        None => fail("no secrets.ejson/secrets.eyaml filename passed"),
-    };
+    let filename = args
+        .filename
+        .unwrap_or_else(|| fail("no secrets.ejson/secrets.eyaml filename passed"));
 
     // Read private key from stdin if requested
     // Using Zeroizing to ensure the key is securely wiped from memory when dropped
     let user_supplied_private_key: Zeroizing<String> = if args.key_from_stdin {
-        match read_key_from_stdin() {
-            Ok(key) => key,
-            Err(e) => fail(&format!("failed to read from stdin: {}", e)),
-        }
+        read_key_from_stdin().unwrap_or_else(|e| fail(&format!("failed to read from stdin: {}", e)))
     } else {
         Zeroizing::new(String::new())
     };
