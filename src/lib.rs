@@ -1178,4 +1178,43 @@ mod tests {
         assert!(secrets.is_empty());
         assert_eq!(secrets.len(), 0);
     }
+
+    #[test]
+    fn test_secret_env_map_into_iterator() {
+        let mut secrets = SecretEnvMap::new();
+        secrets.insert("ZEBRA".to_string(), "value_z".to_string());
+        secrets.insert("ALPHA".to_string(), "value_a".to_string());
+        secrets.insert("MIKE".to_string(), "value_m".to_string());
+
+        // Test that we can iterate using for-in syntax (IntoIterator trait)
+        let collected: Vec<_> = (&secrets).into_iter().collect();
+        assert_eq!(collected.len(), 3);
+
+        // Verify iteration order is sorted by key (BTreeMap behavior)
+        let keys: Vec<_> = collected.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, vec!["ALPHA", "MIKE", "ZEBRA"]);
+
+        // Verify values are correctly associated
+        let pairs: Vec<_> = collected
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("ALPHA", "value_a"),
+                ("MIKE", "value_m"),
+                ("ZEBRA", "value_z")
+            ]
+        );
+
+        // Test idiomatic for-in loop
+        let mut count = 0;
+        for (k, v) in &secrets {
+            assert!(!k.is_empty());
+            assert!(!v.is_empty());
+            count += 1;
+        }
+        assert_eq!(count, 3);
+    }
 }
