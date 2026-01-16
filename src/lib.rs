@@ -11,8 +11,8 @@
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::path::Path;
+use std::sync::LazyLock;
 
-use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::Value as JsonValue;
 use serde_yml::Value as YamlValue;
@@ -104,9 +104,18 @@ impl std::fmt::Debug for SecretEnvMap {
     }
 }
 
+impl<'a> IntoIterator for &'a SecretEnvMap {
+    type Item = (&'a String, &'a String);
+    type IntoIter = std::collections::btree_map::Iter<'a, String, String>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.inner.iter()
+    }
+}
+
 /// Regex pattern for valid environment variable identifiers.
 /// Must start with letter or underscore, followed by letters, digits, or underscores.
-static VALID_IDENTIFIER_PATTERN: Lazy<Regex> = Lazy::new(|| {
+static VALID_IDENTIFIER_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*$").expect("VALID_IDENTIFIER_PATTERN regex is invalid")
 });
 
@@ -341,8 +350,7 @@ pub fn read_and_extract_env(
     private_key: &str,
     trim_underscore_prefix: bool,
 ) -> Result<SecretEnvMap, Ejson2EnvError> {
-    let secrets = read_secrets(filename, keydir, private_key, trim_underscore_prefix)
-        .map_err(|e| Ejson2EnvError::LoadError(e.to_string()))?;
+    let secrets = read_secrets(filename, keydir, private_key, trim_underscore_prefix)?;
     extract_env_from_secrets(&secrets)
 }
 
@@ -372,17 +380,9 @@ pub fn read_and_export_env<W: Write>(
 }
 
 /// Validates that a key is safe for use in shell export statements.
-/// Keys must contain only alphanumeric characters and underscores.
+/// Keys must start with a letter or underscore, followed by letters, digits, or underscores.
 fn valid_key(k: &str) -> bool {
-    if k.is_empty() {
-        return false;
-    }
-    for c in k.chars() {
-        if !c.is_alphabetic() && !c.is_ascii_digit() && c != '_' {
-            return false;
-        }
-    }
-    true
+    VALID_IDENTIFIER_PATTERN.is_match(k)
 }
 
 /// Filters control characters from a value, preserving newlines.
@@ -429,7 +429,7 @@ fn shell_quote(s: &str) -> String {
 /// Internal export function that writes environment variables with a prefix.
 fn export(w: &mut dyn Write, prefix: &str, values: &SecretEnvMap) {
     // SecretEnvMap uses BTreeMap internally, so iteration is sorted by key
-    for (k, v) in values.iter() {
+    for (k, v) in values {
         if !valid_key(k) {
             eprintln!("ejson2env blocked invalid key");
             continue;
@@ -679,19 +679,15 @@ mod tests {
 
     #[test]
     fn test_load_secrets() {
-        let result = read_and_extract_env(
+        let env_values = read_and_extract_env(
             &test_ejson_path("test-expected-usage.ejson"),
             "./key",
             TEST_KEY_VALUE,
             false,
-        );
+        )
+        .expect("Failed to load secrets");
 
-        match result {
-            Ok(env_values) => {
-                assert_eq!(env_values.get("test_key"), Some(&"test value".to_string()));
-            }
-            Err(e) => panic!("Failed to load secrets: {}", e),
-        }
+        assert_eq!(env_values.get("test_key"), Some(&"test value".to_string()));
     }
 
     #[test]
@@ -726,19 +722,15 @@ mod tests {
 
     #[test]
     fn test_load_underscore_env_secrets() {
-        let result = read_and_extract_env(
+        let env_values = read_and_extract_env(
             &test_ejson_path("test-leading-underscore-env-key.ejson"),
             "./key",
             TEST_KEY_VALUE,
             false,
-        );
+        )
+        .expect("Failed to load secrets");
 
-        match result {
-            Ok(env_values) => {
-                assert_eq!(env_values.get("_test_key"), Some(&"test value".to_string()));
-            }
-            Err(e) => panic!("Failed to load secrets: {}", e),
-        }
+        assert_eq!(env_values.get("_test_key"), Some(&"test value".to_string()));
     }
 
     #[test]
@@ -854,19 +846,15 @@ mod tests {
 
     #[test]
     fn test_load_eyaml_secrets() {
-        let result = read_and_extract_env(
+        let env_values = read_and_extract_env(
             &test_ejson_path("test-expected-usage.eyaml"),
             "/opt/ejson/keys",
             TEST_KEY_VALUE,
             false,
-        );
+        )
+        .expect("Failed to load secrets");
 
-        match result {
-            Ok(env_values) => {
-                assert_eq!(env_values.get("test_key"), Some(&"test value".to_string()));
-            }
-            Err(e) => panic!("Failed to load secrets: {}", e),
-        }
+        assert_eq!(env_values.get("test_key"), Some(&"test value".to_string()));
     }
 
     #[test]
@@ -901,19 +889,15 @@ mod tests {
 
     #[test]
     fn test_load_eyaml_underscore_env_secrets() {
-        let result = read_and_extract_env(
+        let env_values = read_and_extract_env(
             &test_ejson_path("test-leading-underscore-env-key.eyaml"),
             "/opt/ejson/keys",
             TEST_KEY_VALUE,
             false,
-        );
+        )
+        .expect("Failed to load secrets");
 
-        match result {
-            Ok(env_values) => {
-                assert_eq!(env_values.get("_test_key"), Some(&"test value".to_string()));
-            }
-            Err(e) => panic!("Failed to load secrets: {}", e),
-        }
+        assert_eq!(env_values.get("_test_key"), Some(&"test value".to_string()));
     }
 
     #[test]
@@ -1054,19 +1038,15 @@ mod tests {
 
     #[test]
     fn test_load_etoml_secrets() {
-        let result = read_and_extract_env(
+        let env_values = read_and_extract_env(
             &test_ejson_path("test-expected-usage.etoml"),
             "/opt/ejson/keys",
             TEST_KEY_VALUE,
             false,
-        );
+        )
+        .expect("Failed to load secrets");
 
-        match result {
-            Ok(env_values) => {
-                assert_eq!(env_values.get("test_key"), Some(&"test value".to_string()));
-            }
-            Err(e) => panic!("Failed to load secrets: {}", e),
-        }
+        assert_eq!(env_values.get("test_key"), Some(&"test value".to_string()));
     }
 
     #[test]
@@ -1101,19 +1081,15 @@ mod tests {
 
     #[test]
     fn test_load_etoml_underscore_env_secrets() {
-        let result = read_and_extract_env(
+        let env_values = read_and_extract_env(
             &test_ejson_path("test-leading-underscore-env-key.etoml"),
             "/opt/ejson/keys",
             TEST_KEY_VALUE,
             false,
-        );
+        )
+        .expect("Failed to load secrets");
 
-        match result {
-            Ok(env_values) => {
-                assert_eq!(env_values.get("_test_key"), Some(&"test value".to_string()));
-            }
-            Err(e) => panic!("Failed to load secrets: {}", e),
-        }
+        assert_eq!(env_values.get("_test_key"), Some(&"test value".to_string()));
     }
 
     #[test]
