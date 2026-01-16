@@ -1,6 +1,6 @@
 [package]
 name = "ejson2env"
-version = "0.0.7"
+version = "0.0.8"
 edition = "2021"
 authors = ["Trung Lê <8@tle.id.au>"]
 description = "Export environment variables from EJSON, EYAML, and ETOML files"
