@@ -12,7 +12,7 @@ categories = ["command-line-utilities"]
 
 [dependencies]
 # EJSON library for decryption
-ejson = { git = "https://github.com/runlevel5/ejson-rs", tag = "v0.0.10" }
+ejson = { git = "https://github.com/runlevel5/ejson-rs", tag = "v0.0.13" }
 
 # CLI
 clap = { version = "4.5", features = ["derive", "env"] }
