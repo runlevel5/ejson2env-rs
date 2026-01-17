@@ -12,10 +12,8 @@ use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-use serde_json::Value as JsonValue;
-use serde_norway::Value as YamlValue;
+use ejson::DecryptedContent;
 use thiserror::Error;
-use toml::Value as TomlValue;
 use zeroize::{Zeroize, Zeroizing};
 
 // Re-export FileFormat from ejson for use by dependent crates
@@ -147,15 +145,6 @@ pub enum Ejson2EnvError {
     #[error("io error: {0}")]
     Io(#[from] io::Error),
 
-    #[error("json error: {0}")]
-    Json(#[from] serde_json::Error),
-
-    #[error("yaml error: {0}")]
-    Yaml(#[from] serde_norway::Error),
-
-    #[error("toml error: {0}")]
-    Toml(#[from] toml::de::Error),
-
     #[error("ejson error: {0}")]
     Ejson(#[from] ejson::EjsonError),
 
@@ -189,89 +178,28 @@ fn validate_path(path: &str) -> Result<std::path::PathBuf, Ejson2EnvError> {
         .map_err(|e| Ejson2EnvError::InvalidPath(format!("cannot resolve path: {}", e)))
 }
 
-/// Extracts environment values from decrypted JSON secrets.
+/// Extracts environment values from decrypted content (JSON, YAML, or TOML).
 ///
 /// Returns a SecretEnvMap of environment variable names to their values.
 /// Only string values are exported; non-string values are silently ignored.
 ///
 /// Security: The returned SecretEnvMap will automatically zeroize all values when dropped.
-pub fn extract_env_json(secrets: &JsonValue) -> Result<SecretEnvMap, Ejson2EnvError> {
-    let raw_env = secrets.get("environment").ok_or(Ejson2EnvError::NoEnv)?;
+pub fn extract_env(content: &DecryptedContent) -> Result<SecretEnvMap, Ejson2EnvError> {
+    let raw_env = content.get("environment").ok_or(Ejson2EnvError::NoEnv)?;
 
-    let env_map = raw_env.as_object().ok_or(Ejson2EnvError::EnvNotMap)?;
+    let env_map = raw_env.as_string_map().ok_or(Ejson2EnvError::EnvNotMap)?;
 
     let mut env_secrets = SecretEnvMap::new();
 
     for (key, raw_value) in env_map {
         // Reject keys that would be invalid environment variable identifiers
         if !is_valid_identifier(key) {
-            return Err(Ejson2EnvError::InvalidIdentifier(key.clone()));
+            return Err(Ejson2EnvError::InvalidIdentifier(key.to_string()));
         }
 
         // Only export values that are strings
         if let Some(value) = raw_value.as_str() {
-            env_secrets.insert(key.clone(), value.to_string());
-        }
-    }
-
-    Ok(env_secrets)
-}
-
-/// Extracts environment values from decrypted YAML secrets.
-///
-/// Returns a SecretEnvMap of environment variable names to their values.
-/// Only string values are exported; non-string values are silently ignored.
-///
-/// Security: The returned SecretEnvMap will automatically zeroize all values when dropped.
-pub fn extract_env_yaml(secrets: &YamlValue) -> Result<SecretEnvMap, Ejson2EnvError> {
-    let raw_env = secrets.get("environment").ok_or(Ejson2EnvError::NoEnv)?;
-
-    let env_map = raw_env.as_mapping().ok_or(Ejson2EnvError::EnvNotMap)?;
-
-    let mut env_secrets = SecretEnvMap::new();
-
-    for (key, raw_value) in env_map {
-        // Get the key as a string
-        let key_str = key
-            .as_str()
-            .ok_or_else(|| Ejson2EnvError::InvalidIdentifier(format!("{:?}", key)))?;
-
-        // Reject keys that would be invalid environment variable identifiers
-        if !is_valid_identifier(key_str) {
-            return Err(Ejson2EnvError::InvalidIdentifier(key_str.to_string()));
-        }
-
-        // Only export values that are strings
-        if let Some(value) = raw_value.as_str() {
-            env_secrets.insert(key_str.to_string(), value.to_string());
-        }
-    }
-
-    Ok(env_secrets)
-}
-
-/// Extracts environment values from decrypted TOML secrets.
-///
-/// Returns a SecretEnvMap of environment variable names to their values.
-/// Only string values are exported; non-string values are silently ignored.
-///
-/// Security: The returned SecretEnvMap will automatically zeroize all values when dropped.
-pub fn extract_env_toml(secrets: &TomlValue) -> Result<SecretEnvMap, Ejson2EnvError> {
-    let raw_env = secrets.get("environment").ok_or(Ejson2EnvError::NoEnv)?;
-
-    let env_map = raw_env.as_table().ok_or(Ejson2EnvError::EnvNotMap)?;
-
-    let mut env_secrets = SecretEnvMap::new();
-
-    for (key, raw_value) in env_map {
-        // Reject keys that would be invalid environment variable identifiers
-        if !is_valid_identifier(key) {
-            return Err(Ejson2EnvError::InvalidIdentifier(key.clone()));
-        }
-
-        // Only export values that are strings
-        if let Some(value) = raw_value.as_str() {
-            env_secrets.insert(key.clone(), value.to_string());
+            env_secrets.insert(key.to_string(), value.to_string());
         }
     }
 
@@ -290,26 +218,10 @@ pub fn read_and_extract_env(
     // Validate the filename path to prevent path traversal
     let canonical_path = validate_path(filename)?;
 
-    let decrypted =
-        ejson::decrypt_file(&canonical_path, keydir, private_key, trim_underscore_prefix)?;
-    let format = FileFormat::from_path(filename)?;
+    let content =
+        ejson::decrypt_file_typed(&canonical_path, keydir, private_key, trim_underscore_prefix)?;
 
-    match format {
-        FileFormat::Json => {
-            let secrets: JsonValue = serde_json::from_slice(&decrypted)?;
-            extract_env_json(&secrets)
-        }
-        FileFormat::Yaml => {
-            let secrets: YamlValue = serde_norway::from_slice(&decrypted)?;
-            extract_env_yaml(&secrets)
-        }
-        FileFormat::Toml => {
-            let decrypted_str = std::str::from_utf8(&decrypted)
-                .map_err(|e| Ejson2EnvError::LoadError(format!("invalid UTF-8: {}", e)))?;
-            let secrets: TomlValue = toml::from_str(decrypted_str)?;
-            extract_env_toml(&secrets)
-        }
-    }
+    extract_env(&content)
 }
 
 /// Reads, extracts, and exports environment variables.
@@ -430,6 +342,10 @@ pub fn read_key_from_stdin() -> Result<Zeroizing<String>, io::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ejson::DecryptedContent;
+    use serde_json;
+    use serde_norway;
+    use toml;
 
     const TEST_KEY_VALUE: &str = "2ed65dd6a16eab833cc4d2a860baa60042da34a58ac43855e8554ca87a5e557d";
 
@@ -481,45 +397,49 @@ mod tests {
 
     #[test]
     fn test_extract_env_json_no_env() {
-        let secrets: JsonValue = serde_json::json!({
+        let json_value = serde_json::json!({
             "_public_key": "abc123"
         });
-        let result = extract_env_json(&secrets);
+        let content = DecryptedContent::Json(json_value);
+        let result = extract_env(&content);
         assert!(matches!(result, Err(Ejson2EnvError::NoEnv)));
     }
 
     #[test]
     fn test_extract_env_json_not_map() {
-        let secrets: JsonValue = serde_json::json!({
+        let json_value = serde_json::json!({
             "_public_key": "abc123",
             "environment": "not a map"
         });
-        let result = extract_env_json(&secrets);
+        let content = DecryptedContent::Json(json_value);
+        let result = extract_env(&content);
         assert!(matches!(result, Err(Ejson2EnvError::EnvNotMap)));
     }
 
     #[test]
     fn test_extract_env_json_invalid_key() {
-        let secrets: JsonValue = serde_json::json!({
+        let json_value = serde_json::json!({
             "_public_key": "abc123",
             "environment": {
                 "invalid key": "value"
             }
         });
-        let result = extract_env_json(&secrets);
+        let content = DecryptedContent::Json(json_value);
+        let result = extract_env(&content);
         assert!(matches!(result, Err(Ejson2EnvError::InvalidIdentifier(_))));
     }
 
     #[test]
     fn test_extract_env_json_valid() {
-        let secrets: JsonValue = serde_json::json!({
+        let json_value = serde_json::json!({
             "_public_key": "abc123",
             "environment": {
                 "test_key": "test_value",
                 "_underscore_key": "underscore_value"
             }
         });
-        let result = extract_env_json(&secrets).unwrap();
+        let content = DecryptedContent::Json(json_value);
+        let result = extract_env(&content).unwrap();
         assert_eq!(result.get("test_key"), Some(&"test_value".to_string()));
         assert_eq!(
             result.get("_underscore_key"),
@@ -746,32 +666,34 @@ mod tests {
     // EYAML tests
     #[test]
     fn test_extract_env_yaml_no_env() {
-        let secrets: YamlValue = serde_norway::from_str(
+        let yaml_value: serde_norway::Value = serde_norway::from_str(
             r#"
             _public_key: "abc123"
             "#,
         )
         .unwrap();
-        let result = extract_env_yaml(&secrets);
+        let content = DecryptedContent::Yaml(yaml_value);
+        let result = extract_env(&content);
         assert!(matches!(result, Err(Ejson2EnvError::NoEnv)));
     }
 
     #[test]
     fn test_extract_env_yaml_not_map() {
-        let secrets: YamlValue = serde_norway::from_str(
+        let yaml_value: serde_norway::Value = serde_norway::from_str(
             r#"
             _public_key: "abc123"
             environment: "not a map"
             "#,
         )
         .unwrap();
-        let result = extract_env_yaml(&secrets);
+        let content = DecryptedContent::Yaml(yaml_value);
+        let result = extract_env(&content);
         assert!(matches!(result, Err(Ejson2EnvError::EnvNotMap)));
     }
 
     #[test]
     fn test_extract_env_yaml_invalid_key() {
-        let secrets: YamlValue = serde_norway::from_str(
+        let yaml_value: serde_norway::Value = serde_norway::from_str(
             r#"
             _public_key: "abc123"
             environment:
@@ -779,13 +701,14 @@ mod tests {
             "#,
         )
         .unwrap();
-        let result = extract_env_yaml(&secrets);
+        let content = DecryptedContent::Yaml(yaml_value);
+        let result = extract_env(&content);
         assert!(matches!(result, Err(Ejson2EnvError::InvalidIdentifier(_))));
     }
 
     #[test]
     fn test_extract_env_yaml_valid() {
-        let secrets: YamlValue = serde_norway::from_str(
+        let yaml_value: serde_norway::Value = serde_norway::from_str(
             r#"
             _public_key: "abc123"
             environment:
@@ -794,7 +717,8 @@ mod tests {
             "#,
         )
         .unwrap();
-        let result = extract_env_yaml(&secrets).unwrap();
+        let content = DecryptedContent::Yaml(yaml_value);
+        let result = extract_env(&content).unwrap();
         assert_eq!(result.get("test_key"), Some(&"test_value".to_string()));
         assert_eq!(
             result.get("_underscore_key"),
@@ -938,32 +862,34 @@ mod tests {
     // ETOML tests
     #[test]
     fn test_extract_env_toml_no_env() {
-        let secrets: TomlValue = toml::from_str(
+        let toml_value: toml::Value = toml::from_str(
             r#"
             _public_key = "abc123"
             "#,
         )
         .unwrap();
-        let result = extract_env_toml(&secrets);
+        let content = DecryptedContent::Toml(toml_value);
+        let result = extract_env(&content);
         assert!(matches!(result, Err(Ejson2EnvError::NoEnv)));
     }
 
     #[test]
     fn test_extract_env_toml_not_map() {
-        let secrets: TomlValue = toml::from_str(
+        let toml_value: toml::Value = toml::from_str(
             r#"
             _public_key = "abc123"
             environment = "not a map"
             "#,
         )
         .unwrap();
-        let result = extract_env_toml(&secrets);
+        let content = DecryptedContent::Toml(toml_value);
+        let result = extract_env(&content);
         assert!(matches!(result, Err(Ejson2EnvError::EnvNotMap)));
     }
 
     #[test]
     fn test_extract_env_toml_invalid_key() {
-        let secrets: TomlValue = toml::from_str(
+        let toml_value: toml::Value = toml::from_str(
             r#"
             _public_key = "abc123"
             [environment]
@@ -971,13 +897,14 @@ mod tests {
             "#,
         )
         .unwrap();
-        let result = extract_env_toml(&secrets);
+        let content = DecryptedContent::Toml(toml_value);
+        let result = extract_env(&content);
         assert!(matches!(result, Err(Ejson2EnvError::InvalidIdentifier(_))));
     }
 
     #[test]
     fn test_extract_env_toml_valid() {
-        let secrets: TomlValue = toml::from_str(
+        let toml_value: toml::Value = toml::from_str(
             r#"
             _public_key = "abc123"
             [environment]
@@ -986,7 +913,8 @@ mod tests {
             "#,
         )
         .unwrap();
-        let result = extract_env_toml(&secrets).unwrap();
+        let content = DecryptedContent::Toml(toml_value);
+        let result = extract_env(&content).unwrap();
         assert_eq!(result.get("test_key"), Some(&"test_value".to_string()));
         assert_eq!(
             result.get("_underscore_key"),
