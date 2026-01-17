@@ -35,9 +35,6 @@ regex = "1.12"
 # Secure memory handling (zeroize secrets)
 zeroize = { version = "1.8", features = ["derive"] }
 
-[dev-dependencies]
-tempfile = "3.24"
-
 [[bin]]
 name = "ejson2env"
 path = "src/main.rs"
