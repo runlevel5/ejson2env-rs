@@ -171,28 +171,6 @@ pub fn is_env_error(err: &Ejson2EnvError) -> bool {
     matches!(err, Ejson2EnvError::NoEnv | Ejson2EnvError::EnvNotMap)
 }
 
-/// Decrypted secrets that can be either JSON, YAML, or TOML.
-///
-/// Security: This enum implements a custom Drop that attempts to clear sensitive
-/// data from memory. Note that the underlying serde types don't implement Zeroize,
-/// so this is a best-effort approach - the sensitive data is dropped and the memory
-/// will be overwritten, but not cryptographically zeroized.
-pub enum DecryptedSecrets {
-    Json(JsonValue),
-    Yaml(YamlValue),
-    Toml(TomlValue),
-}
-
-impl std::fmt::Debug for DecryptedSecrets {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DecryptedSecrets::Json(_) => f.debug_tuple("Json").field(&"[REDACTED]").finish(),
-            DecryptedSecrets::Yaml(_) => f.debug_tuple("Yaml").field(&"[REDACTED]").finish(),
-            DecryptedSecrets::Toml(_) => f.debug_tuple("Toml").field(&"[REDACTED]").finish(),
-        }
-    }
-}
-
 /// Validates that a path does not contain path traversal sequences.
 /// Returns the canonicalized path if valid.
 fn validate_path(path: &str) -> Result<std::path::PathBuf, Ejson2EnvError> {
@@ -209,38 +187,6 @@ fn validate_path(path: &str) -> Result<std::path::PathBuf, Ejson2EnvError> {
     path_obj
         .canonicalize()
         .map_err(|e| Ejson2EnvError::InvalidPath(format!("cannot resolve path: {}", e)))
-}
-
-/// Reads and decrypts secrets from an EJSON, EYAML, or ETOML file.
-fn read_secrets(
-    filename: &str,
-    keydir: &str,
-    private_key: &str,
-    trim_underscore_prefix: bool,
-) -> Result<DecryptedSecrets, Ejson2EnvError> {
-    // Validate the filename path to prevent path traversal
-    let canonical_path = validate_path(filename)?;
-
-    let decrypted =
-        ejson::decrypt_file(&canonical_path, keydir, private_key, trim_underscore_prefix)?;
-    let format = FileFormat::from_path(filename)?;
-
-    match format {
-        FileFormat::Json => {
-            let secrets: JsonValue = serde_json::from_slice(&decrypted)?;
-            Ok(DecryptedSecrets::Json(secrets))
-        }
-        FileFormat::Yaml => {
-            let secrets: YamlValue = serde_norway::from_slice(&decrypted)?;
-            Ok(DecryptedSecrets::Yaml(secrets))
-        }
-        FileFormat::Toml => {
-            let decrypted_str = std::str::from_utf8(&decrypted)
-                .map_err(|e| Ejson2EnvError::LoadError(format!("invalid UTF-8: {}", e)))?;
-            let secrets: TomlValue = toml::from_str(decrypted_str)?;
-            Ok(DecryptedSecrets::Toml(secrets))
-        }
-    }
 }
 
 /// Extracts environment values from decrypted JSON secrets.
@@ -332,19 +278,6 @@ pub fn extract_env_toml(secrets: &TomlValue) -> Result<SecretEnvMap, Ejson2EnvEr
     Ok(env_secrets)
 }
 
-/// Extracts environment values from decrypted secrets (JSON, YAML, or TOML).
-///
-/// Security: The returned SecretEnvMap will automatically zeroize all values when dropped.
-pub fn extract_env_from_secrets(
-    secrets: &DecryptedSecrets,
-) -> Result<SecretEnvMap, Ejson2EnvError> {
-    match secrets {
-        DecryptedSecrets::Json(json) => extract_env_json(json),
-        DecryptedSecrets::Yaml(yaml) => extract_env_yaml(yaml),
-        DecryptedSecrets::Toml(toml) => extract_env_toml(toml),
-    }
-}
-
 /// Reads secrets from file and extracts environment variables.
 ///
 /// Security: The returned SecretEnvMap will automatically zeroize all values when dropped.
@@ -354,8 +287,29 @@ pub fn read_and_extract_env(
     private_key: &str,
     trim_underscore_prefix: bool,
 ) -> Result<SecretEnvMap, Ejson2EnvError> {
-    let secrets = read_secrets(filename, keydir, private_key, trim_underscore_prefix)?;
-    extract_env_from_secrets(&secrets)
+    // Validate the filename path to prevent path traversal
+    let canonical_path = validate_path(filename)?;
+
+    let decrypted =
+        ejson::decrypt_file(&canonical_path, keydir, private_key, trim_underscore_prefix)?;
+    let format = FileFormat::from_path(filename)?;
+
+    match format {
+        FileFormat::Json => {
+            let secrets: JsonValue = serde_json::from_slice(&decrypted)?;
+            extract_env_json(&secrets)
+        }
+        FileFormat::Yaml => {
+            let secrets: YamlValue = serde_norway::from_slice(&decrypted)?;
+            extract_env_yaml(&secrets)
+        }
+        FileFormat::Toml => {
+            let decrypted_str = std::str::from_utf8(&decrypted)
+                .map_err(|e| Ejson2EnvError::LoadError(format!("invalid UTF-8: {}", e)))?;
+            let secrets: TomlValue = toml::from_str(decrypted_str)?;
+            extract_env_toml(&secrets)
+        }
+    }
 }
 
 /// Reads, extracts, and exports environment variables.
@@ -1147,23 +1101,6 @@ mod tests {
         // Should NOT contain the actual secret values
         assert!(!debug_output.contains("super_secret_key_123"));
         assert!(!debug_output.contains("password123"));
-    }
-
-    #[test]
-    fn test_decrypted_secrets_debug_redacts_content() {
-        let json_secrets = DecryptedSecrets::Json(serde_json::json!({
-            "environment": {
-                "SECRET": "my_secret_value"
-            }
-        }));
-
-        let debug_output = format!("{:?}", json_secrets);
-
-        // Should show type but not content
-        assert!(debug_output.contains("Json"));
-        assert!(debug_output.contains("[REDACTED]"));
-        // Should NOT contain the actual secret
-        assert!(!debug_output.contains("my_secret_value"));
     }
 
     #[test]
