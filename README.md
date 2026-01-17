@@ -175,7 +175,23 @@ EJSON uses public-key cryptography. The private key must be available at decrypt
 2. **Stdin**: Pass via `--key-from-stdin`
 3. **Environment**: Set `EJSON_KEYDIR` to override the default key directory
 
+## Benchmarking
+
+Comparing `ejson2env-rs` with the original Go `Shopify/ejson2env` implementation:
+
+| Env Vars | Rust (ms) | Go (ms) | Speedup |
+|----------|-----------|---------|---------|
+| 10       | 3.3       | 4.4     | 1.33x   |
+| 100      | 3.5       | 5.7     | 1.64x   |
+| 500      | 5.0       | 12.7    | 2.52x   |
+| 1000     | 7.2       | 21.3    | 2.94x   |
+| 2000     | 10.4      | 37.4    | 3.59x   |
+
+Rust is consistently faster and scales better than the original Go implementation.
+
+> **Note:** Because Go version does not support TOML and YAML, the benchmark was conducted against JSON file.
+
 ## Related Projects
 
-- [ejson](https://github.com/Shopify/ejson) - Original EJSON tool by Shopify
+- [ejson2env](https://github.com/Shopify/ejson2env) - Original ejson2env Go implementation by Shopify
 - [ejson-rs](https://github.com/runlevel5/ejson-rs) - Rust EJSON library this tool is built on (supports JSON, YAML, and TOML)

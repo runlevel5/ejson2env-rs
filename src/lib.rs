@@ -11,11 +11,9 @@
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::path::Path;
-use std::sync::LazyLock;
 
-use regex::Regex;
 use serde_json::Value as JsonValue;
-use serde_yml::Value as YamlValue;
+use serde_norway::Value as YamlValue;
 use thiserror::Error;
 use toml::Value as TomlValue;
 use zeroize::{Zeroize, Zeroizing};
@@ -113,11 +111,17 @@ impl<'a> IntoIterator for &'a SecretEnvMap {
     }
 }
 
-/// Regex pattern for valid environment variable identifiers.
+/// Validates that a string is a valid environment variable identifier.
 /// Must start with letter or underscore, followed by letters, digits, or underscores.
-static VALID_IDENTIFIER_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*$").expect("VALID_IDENTIFIER_PATTERN regex is invalid")
-});
+#[inline]
+fn is_valid_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
 
 /// Errors that can occur during ejson2env operations.
 #[derive(Error, Debug)]
@@ -147,7 +151,7 @@ pub enum Ejson2EnvError {
     Json(#[from] serde_json::Error),
 
     #[error("yaml error: {0}")]
-    Yaml(#[from] serde_yml::Error),
+    Yaml(#[from] serde_norway::Error),
 
     #[error("toml error: {0}")]
     Toml(#[from] toml::de::Error),
@@ -165,28 +169,6 @@ pub type ExportFunction = fn(&mut dyn Write, &SecretEnvMap);
 /// Returns true if the error is due to the environment being missing or invalid.
 pub fn is_env_error(err: &Ejson2EnvError) -> bool {
     matches!(err, Ejson2EnvError::NoEnv | Ejson2EnvError::EnvNotMap)
-}
-
-/// Decrypted secrets that can be either JSON, YAML, or TOML.
-///
-/// Security: This enum implements a custom Drop that attempts to clear sensitive
-/// data from memory. Note that the underlying serde types don't implement Zeroize,
-/// so this is a best-effort approach - the sensitive data is dropped and the memory
-/// will be overwritten, but not cryptographically zeroized.
-pub enum DecryptedSecrets {
-    Json(JsonValue),
-    Yaml(YamlValue),
-    Toml(TomlValue),
-}
-
-impl std::fmt::Debug for DecryptedSecrets {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DecryptedSecrets::Json(_) => f.debug_tuple("Json").field(&"[REDACTED]").finish(),
-            DecryptedSecrets::Yaml(_) => f.debug_tuple("Yaml").field(&"[REDACTED]").finish(),
-            DecryptedSecrets::Toml(_) => f.debug_tuple("Toml").field(&"[REDACTED]").finish(),
-        }
-    }
 }
 
 /// Validates that a path does not contain path traversal sequences.
@@ -207,38 +189,6 @@ fn validate_path(path: &str) -> Result<std::path::PathBuf, Ejson2EnvError> {
         .map_err(|e| Ejson2EnvError::InvalidPath(format!("cannot resolve path: {}", e)))
 }
 
-/// Reads and decrypts secrets from an EJSON, EYAML, or ETOML file.
-fn read_secrets(
-    filename: &str,
-    keydir: &str,
-    private_key: &str,
-    trim_underscore_prefix: bool,
-) -> Result<DecryptedSecrets, Ejson2EnvError> {
-    // Validate the filename path to prevent path traversal
-    let canonical_path = validate_path(filename)?;
-
-    let decrypted =
-        ejson::decrypt_file(&canonical_path, keydir, private_key, trim_underscore_prefix)?;
-    let format = FileFormat::from_path(filename)?;
-
-    match format {
-        FileFormat::Json => {
-            let secrets: JsonValue = serde_json::from_slice(&decrypted)?;
-            Ok(DecryptedSecrets::Json(secrets))
-        }
-        FileFormat::Yaml => {
-            let secrets: YamlValue = serde_yml::from_slice(&decrypted)?;
-            Ok(DecryptedSecrets::Yaml(secrets))
-        }
-        FileFormat::Toml => {
-            let decrypted_str = std::str::from_utf8(&decrypted)
-                .map_err(|e| Ejson2EnvError::LoadError(format!("invalid UTF-8: {}", e)))?;
-            let secrets: TomlValue = toml::from_str(decrypted_str)?;
-            Ok(DecryptedSecrets::Toml(secrets))
-        }
-    }
-}
-
 /// Extracts environment values from decrypted JSON secrets.
 ///
 /// Returns a SecretEnvMap of environment variable names to their values.
@@ -254,7 +204,7 @@ pub fn extract_env_json(secrets: &JsonValue) -> Result<SecretEnvMap, Ejson2EnvEr
 
     for (key, raw_value) in env_map {
         // Reject keys that would be invalid environment variable identifiers
-        if !VALID_IDENTIFIER_PATTERN.is_match(key) {
+        if !is_valid_identifier(key) {
             return Err(Ejson2EnvError::InvalidIdentifier(key.clone()));
         }
 
@@ -287,7 +237,7 @@ pub fn extract_env_yaml(secrets: &YamlValue) -> Result<SecretEnvMap, Ejson2EnvEr
             .ok_or_else(|| Ejson2EnvError::InvalidIdentifier(format!("{:?}", key)))?;
 
         // Reject keys that would be invalid environment variable identifiers
-        if !VALID_IDENTIFIER_PATTERN.is_match(key_str) {
+        if !is_valid_identifier(key_str) {
             return Err(Ejson2EnvError::InvalidIdentifier(key_str.to_string()));
         }
 
@@ -315,7 +265,7 @@ pub fn extract_env_toml(secrets: &TomlValue) -> Result<SecretEnvMap, Ejson2EnvEr
 
     for (key, raw_value) in env_map {
         // Reject keys that would be invalid environment variable identifiers
-        if !VALID_IDENTIFIER_PATTERN.is_match(key) {
+        if !is_valid_identifier(key) {
             return Err(Ejson2EnvError::InvalidIdentifier(key.clone()));
         }
 
@@ -328,19 +278,6 @@ pub fn extract_env_toml(secrets: &TomlValue) -> Result<SecretEnvMap, Ejson2EnvEr
     Ok(env_secrets)
 }
 
-/// Extracts environment values from decrypted secrets (JSON, YAML, or TOML).
-///
-/// Security: The returned SecretEnvMap will automatically zeroize all values when dropped.
-pub fn extract_env_from_secrets(
-    secrets: &DecryptedSecrets,
-) -> Result<SecretEnvMap, Ejson2EnvError> {
-    match secrets {
-        DecryptedSecrets::Json(json) => extract_env_json(json),
-        DecryptedSecrets::Yaml(yaml) => extract_env_yaml(yaml),
-        DecryptedSecrets::Toml(toml) => extract_env_toml(toml),
-    }
-}
-
 /// Reads secrets from file and extracts environment variables.
 ///
 /// Security: The returned SecretEnvMap will automatically zeroize all values when dropped.
@@ -350,8 +287,29 @@ pub fn read_and_extract_env(
     private_key: &str,
     trim_underscore_prefix: bool,
 ) -> Result<SecretEnvMap, Ejson2EnvError> {
-    let secrets = read_secrets(filename, keydir, private_key, trim_underscore_prefix)?;
-    extract_env_from_secrets(&secrets)
+    // Validate the filename path to prevent path traversal
+    let canonical_path = validate_path(filename)?;
+
+    let decrypted =
+        ejson::decrypt_file(&canonical_path, keydir, private_key, trim_underscore_prefix)?;
+    let format = FileFormat::from_path(filename)?;
+
+    match format {
+        FileFormat::Json => {
+            let secrets: JsonValue = serde_json::from_slice(&decrypted)?;
+            extract_env_json(&secrets)
+        }
+        FileFormat::Yaml => {
+            let secrets: YamlValue = serde_norway::from_slice(&decrypted)?;
+            extract_env_yaml(&secrets)
+        }
+        FileFormat::Toml => {
+            let decrypted_str = std::str::from_utf8(&decrypted)
+                .map_err(|e| Ejson2EnvError::LoadError(format!("invalid UTF-8: {}", e)))?;
+            let secrets: TomlValue = toml::from_str(decrypted_str)?;
+            extract_env_toml(&secrets)
+        }
+    }
 }
 
 /// Reads, extracts, and exports environment variables.
@@ -382,7 +340,7 @@ pub fn read_and_export_env<W: Write>(
 /// Validates that a key is safe for use in shell export statements.
 /// Keys must start with a letter or underscore, followed by letters, digits, or underscores.
 fn valid_key(k: &str) -> bool {
-    VALID_IDENTIFIER_PATTERN.is_match(k)
+    is_valid_identifier(k)
 }
 
 /// Filters control characters from a value, preserving newlines.
@@ -480,18 +438,18 @@ mod tests {
     }
 
     #[test]
-    fn test_valid_identifier_pattern() {
+    fn test_is_valid_identifier() {
         // Should match
-        assert!(VALID_IDENTIFIER_PATTERN.is_match("ALL_CAPS123"));
-        assert!(VALID_IDENTIFIER_PATTERN.is_match("lowercase"));
-        assert!(VALID_IDENTIFIER_PATTERN.is_match("a"));
-        assert!(VALID_IDENTIFIER_PATTERN.is_match("_leading_underscore"));
+        assert!(is_valid_identifier("ALL_CAPS123"));
+        assert!(is_valid_identifier("lowercase"));
+        assert!(is_valid_identifier("a"));
+        assert!(is_valid_identifier("_leading_underscore"));
 
         // Should not match
-        assert!(!VALID_IDENTIFIER_PATTERN.is_match("1_leading_digit"));
-        assert!(!VALID_IDENTIFIER_PATTERN.is_match("contains whitespace"));
-        assert!(!VALID_IDENTIFIER_PATTERN.is_match("contains-dash"));
-        assert!(!VALID_IDENTIFIER_PATTERN.is_match("contains_special_character;"));
+        assert!(!is_valid_identifier("1_leading_digit"));
+        assert!(!is_valid_identifier("contains whitespace"));
+        assert!(!is_valid_identifier("contains-dash"));
+        assert!(!is_valid_identifier("contains_special_character;"));
     }
 
     #[test]
@@ -788,7 +746,7 @@ mod tests {
     // EYAML tests
     #[test]
     fn test_extract_env_yaml_no_env() {
-        let secrets: YamlValue = serde_yml::from_str(
+        let secrets: YamlValue = serde_norway::from_str(
             r#"
             _public_key: "abc123"
             "#,
@@ -800,7 +758,7 @@ mod tests {
 
     #[test]
     fn test_extract_env_yaml_not_map() {
-        let secrets: YamlValue = serde_yml::from_str(
+        let secrets: YamlValue = serde_norway::from_str(
             r#"
             _public_key: "abc123"
             environment: "not a map"
@@ -813,7 +771,7 @@ mod tests {
 
     #[test]
     fn test_extract_env_yaml_invalid_key() {
-        let secrets: YamlValue = serde_yml::from_str(
+        let secrets: YamlValue = serde_norway::from_str(
             r#"
             _public_key: "abc123"
             environment:
@@ -827,7 +785,7 @@ mod tests {
 
     #[test]
     fn test_extract_env_yaml_valid() {
-        let secrets: YamlValue = serde_yml::from_str(
+        let secrets: YamlValue = serde_norway::from_str(
             r#"
             _public_key: "abc123"
             environment:
@@ -1143,23 +1101,6 @@ mod tests {
         // Should NOT contain the actual secret values
         assert!(!debug_output.contains("super_secret_key_123"));
         assert!(!debug_output.contains("password123"));
-    }
-
-    #[test]
-    fn test_decrypted_secrets_debug_redacts_content() {
-        let json_secrets = DecryptedSecrets::Json(serde_json::json!({
-            "environment": {
-                "SECRET": "my_secret_value"
-            }
-        }));
-
-        let debug_output = format!("{:?}", json_secrets);
-
-        // Should show type but not content
-        assert!(debug_output.contains("Json"));
-        assert!(debug_output.contains("[REDACTED]"));
-        // Should NOT contain the actual secret
-        assert!(!debug_output.contains("my_secret_value"));
     }
 
     #[test]
