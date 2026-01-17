@@ -1,6 +1,6 @@
 //! ejson2env CLI - Export environment variables from EJSON and EYAML files.
 
-use std::io;
+use std::io::{self, BufWriter};
 use std::process::exit;
 
 use clap::Parser;
@@ -63,8 +63,8 @@ fn main() {
     // Select the export function based on flags
     let export_func: ExportFunction = if args.quiet { export_quiet } else { export_env };
 
-    // Get stdout handle
-    let mut stdout = io::stdout();
+    // Get stdout handle with buffering for better performance
+    let mut stdout = BufWriter::new(io::stdout());
 
     // Execute with the trim flag passed to the library
     if let Err(e) = read_and_export_env(

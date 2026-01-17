@@ -29,9 +29,6 @@ toml = "0.8"
 # Error handling
 thiserror = "2.0"
 
-# Regex for identifier validation
-regex = "1.12"
-
 # Secure memory handling (zeroize secrets)
 zeroize = { version = "1.8", features = ["derive"] }
 

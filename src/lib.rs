@@ -11,9 +11,7 @@
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::path::Path;
-use std::sync::LazyLock;
 
-use regex::Regex;
 use serde_json::Value as JsonValue;
 use serde_norway::Value as YamlValue;
 use thiserror::Error;
@@ -113,11 +111,17 @@ impl<'a> IntoIterator for &'a SecretEnvMap {
     }
 }
 
-/// Regex pattern for valid environment variable identifiers.
+/// Validates that a string is a valid environment variable identifier.
 /// Must start with letter or underscore, followed by letters, digits, or underscores.
-static VALID_IDENTIFIER_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*$").expect("VALID_IDENTIFIER_PATTERN regex is invalid")
-});
+#[inline]
+fn is_valid_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
 
 /// Errors that can occur during ejson2env operations.
 #[derive(Error, Debug)]
@@ -254,7 +258,7 @@ pub fn extract_env_json(secrets: &JsonValue) -> Result<SecretEnvMap, Ejson2EnvEr
 
     for (key, raw_value) in env_map {
         // Reject keys that would be invalid environment variable identifiers
-        if !VALID_IDENTIFIER_PATTERN.is_match(key) {
+        if !is_valid_identifier(key) {
             return Err(Ejson2EnvError::InvalidIdentifier(key.clone()));
         }
 
@@ -287,7 +291,7 @@ pub fn extract_env_yaml(secrets: &YamlValue) -> Result<SecretEnvMap, Ejson2EnvEr
             .ok_or_else(|| Ejson2EnvError::InvalidIdentifier(format!("{:?}", key)))?;
 
         // Reject keys that would be invalid environment variable identifiers
-        if !VALID_IDENTIFIER_PATTERN.is_match(key_str) {
+        if !is_valid_identifier(key_str) {
             return Err(Ejson2EnvError::InvalidIdentifier(key_str.to_string()));
         }
 
@@ -315,7 +319,7 @@ pub fn extract_env_toml(secrets: &TomlValue) -> Result<SecretEnvMap, Ejson2EnvEr
 
     for (key, raw_value) in env_map {
         // Reject keys that would be invalid environment variable identifiers
-        if !VALID_IDENTIFIER_PATTERN.is_match(key) {
+        if !is_valid_identifier(key) {
             return Err(Ejson2EnvError::InvalidIdentifier(key.clone()));
         }
 
@@ -382,7 +386,7 @@ pub fn read_and_export_env<W: Write>(
 /// Validates that a key is safe for use in shell export statements.
 /// Keys must start with a letter or underscore, followed by letters, digits, or underscores.
 fn valid_key(k: &str) -> bool {
-    VALID_IDENTIFIER_PATTERN.is_match(k)
+    is_valid_identifier(k)
 }
 
 /// Filters control characters from a value, preserving newlines.
@@ -480,18 +484,18 @@ mod tests {
     }
 
     #[test]
-    fn test_valid_identifier_pattern() {
+    fn test_is_valid_identifier() {
         // Should match
-        assert!(VALID_IDENTIFIER_PATTERN.is_match("ALL_CAPS123"));
-        assert!(VALID_IDENTIFIER_PATTERN.is_match("lowercase"));
-        assert!(VALID_IDENTIFIER_PATTERN.is_match("a"));
-        assert!(VALID_IDENTIFIER_PATTERN.is_match("_leading_underscore"));
+        assert!(is_valid_identifier("ALL_CAPS123"));
+        assert!(is_valid_identifier("lowercase"));
+        assert!(is_valid_identifier("a"));
+        assert!(is_valid_identifier("_leading_underscore"));
 
         // Should not match
-        assert!(!VALID_IDENTIFIER_PATTERN.is_match("1_leading_digit"));
-        assert!(!VALID_IDENTIFIER_PATTERN.is_match("contains whitespace"));
-        assert!(!VALID_IDENTIFIER_PATTERN.is_match("contains-dash"));
-        assert!(!VALID_IDENTIFIER_PATTERN.is_match("contains_special_character;"));
+        assert!(!is_valid_identifier("1_leading_digit"));
+        assert!(!is_valid_identifier("contains whitespace"));
+        assert!(!is_valid_identifier("contains-dash"));
+        assert!(!is_valid_identifier("contains_special_character;"));
     }
 
     #[test]
