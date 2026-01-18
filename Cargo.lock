@@ -223,8 +223,8 @@ dependencies = [
 
 [[package]]
 name = "ejson"
-version = "0.0.14"
-source = "git+https://github.com/runlevel5/ejson-rs?tag=v0.0.14#e6824b8728e071cb2fe7b705a9b855cacade7cfd"
+version = "0.0.15"
+source = "git+https://github.com/runlevel5/ejson-rs?tag=v0.0.15#62e220da31fda35ee0b11cb63b0f496beae52917"
 dependencies = [
  "base64",
  "clap",
